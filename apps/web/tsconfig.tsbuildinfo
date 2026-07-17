@@ -1,0 +1,1 @@
+{"root":["./src/main.tsx","./src/router.tsx","./src/vite-env.d.ts","./src/lib/api.ts","./src/lib/session.ts","./src/realtime/index.ts","./src/realtime/userealtimefeed.ts","./src/student/studentjoinpage.tsx","./src/student/studentplaypage.tsx","./src/student/index.ts","./src/teacher/teacherdashboardpage.tsx","./src/teacher/index.ts","./src/ui/appshell.tsx"],"version":"5.9.3"}

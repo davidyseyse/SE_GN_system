@@ -1,0 +1,47 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: ./apps/api
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: 8080
+      API_BASE_URL: http://localhost:8080
+      WEBSOCKET_PORT: 8081
+      WEBSOCKET_URL: ws://localhost:8081/ws
+      CORS_ORIGIN: http://localhost:5173
+      DATABASE_URL: postgres://classroom:classroom@postgres:5432/classroom
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: change-me
+      JWT_ISSUER: classroom-api
+      JWT_AUDIENCE: classroom-clients
+      JWT_TTL_SECONDS: 28800
+      WEBSOCKET_PATH: /ws
+      WEBSOCKET_TOPIC_PREFIX: classroom
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    depends_on:
+      - postgres
+      - redis
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: classroom
+      POSTGRES_USER: classroom
+      POSTGRES_PASSWORD: classroom
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:

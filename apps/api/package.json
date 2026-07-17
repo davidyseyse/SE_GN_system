@@ -1,0 +1,12 @@
+{
+  "name": "@classroom/api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "powershell -ExecutionPolicy Bypass -File scripts/build.ps1",
+    "dev": "powershell -ExecutionPolicy Bypass -File scripts/dev.ps1",
+    "start": "powershell -ExecutionPolicy Bypass -File scripts/start.ps1",
+    "lint": "powershell -ExecutionPolicy Bypass -File scripts/build.ps1",
+    "test": "powershell -ExecutionPolicy Bypass -File scripts/test.ps1"
+  }
+}
