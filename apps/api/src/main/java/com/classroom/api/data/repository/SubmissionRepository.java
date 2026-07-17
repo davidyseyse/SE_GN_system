@@ -2,6 +2,8 @@ package com.classroom.api.data.repository;
 
 import com.classroom.api.data.Database;
 import com.classroom.api.data.DatabaseException;
+import com.classroom.api.data.JsonValue;
+import com.classroom.api.data.SqlTime;
 import com.classroom.api.data.model.SubmissionEntity;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -30,13 +32,13 @@ public final class SubmissionRepository {
       statement.setObject(3, submission.questionId());
       statement.setObject(4, submission.userId());
       statement.setInt(5, submission.attemptNumber());
-      statement.setString(6, submission.submittedAnswer());
+      statement.setString(6, JsonValue.normalize(submission.submittedAnswer()));
       statement.setString(7, submission.submissionStatus());
       statement.setObject(8, submission.isCorrect());
       statement.setObject(9, submission.awardedScore());
       statement.setString(10, submission.reviewStatus());
-      statement.setObject(11, submission.submittedAt());
-      statement.setObject(12, submission.reviewedAt());
+      statement.setTimestamp(11, SqlTime.from(submission.submittedAt()));
+      statement.setTimestamp(12, SqlTime.from(submission.reviewedAt()));
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to save submission", exception);
@@ -125,7 +127,7 @@ public final class SubmissionRepository {
       statement.setObject(1, submission.isCorrect());
       statement.setObject(2, submission.awardedScore());
       statement.setString(3, submission.reviewStatus());
-      statement.setObject(4, submission.reviewedAt());
+      statement.setTimestamp(4, SqlTime.from(submission.reviewedAt()));
       statement.setObject(5, submission.id());
       statement.executeUpdate();
     } catch (SQLException exception) {

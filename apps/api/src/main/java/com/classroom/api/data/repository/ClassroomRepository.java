@@ -2,6 +2,8 @@ package com.classroom.api.data.repository;
 
 import com.classroom.api.data.Database;
 import com.classroom.api.data.DatabaseException;
+import com.classroom.api.data.JsonValue;
+import com.classroom.api.data.SqlTime;
 import com.classroom.api.data.model.ClassroomEntity;
 import com.classroom.api.data.model.ClassroomMemberEntity;
 import java.sql.Connection;
@@ -33,13 +35,13 @@ public final class ClassroomRepository {
       statement.setString(3, classroom.classroomCode());
       statement.setString(4, classroom.name());
       statement.setString(5, classroom.status());
-      statement.setString(6, classroom.participationSettings());
+      statement.setString(6, JsonValue.normalize(classroom.participationSettings()));
       statement.setString(7, classroom.leaderboardVisibility());
       statement.setObject(8, classroom.activeQuestionId());
-      statement.setObject(9, classroom.createdAt());
-      statement.setObject(10, classroom.updatedAt());
-      statement.setObject(11, classroom.openedAt());
-      statement.setObject(12, classroom.closedAt());
+      statement.setTimestamp(9, SqlTime.from(classroom.createdAt()));
+      statement.setTimestamp(10, SqlTime.from(classroom.updatedAt()));
+      statement.setTimestamp(11, SqlTime.from(classroom.openedAt()));
+      statement.setTimestamp(12, SqlTime.from(classroom.closedAt()));
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to save classroom", exception);
@@ -99,8 +101,8 @@ public final class ClassroomRepository {
       statement.setObject(3, member.userId());
       statement.setString(4, member.role());
       statement.setString(5, member.presenceStatus());
-      statement.setObject(6, member.joinedAt());
-      statement.setObject(7, member.lastSeenAt());
+      statement.setTimestamp(6, SqlTime.from(member.joinedAt()));
+      statement.setTimestamp(7, SqlTime.from(member.lastSeenAt()));
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to upsert classroom member presence", exception);

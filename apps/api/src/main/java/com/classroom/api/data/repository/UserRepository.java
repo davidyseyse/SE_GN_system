@@ -2,6 +2,7 @@ package com.classroom.api.data.repository;
 
 import com.classroom.api.data.Database;
 import com.classroom.api.data.DatabaseException;
+import com.classroom.api.data.SqlTime;
 import com.classroom.api.data.model.UserEntity;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -27,8 +28,8 @@ public final class UserRepository {
       statement.setString(2, user.externalId());
       statement.setString(3, user.displayName());
       statement.setString(4, user.role());
-      statement.setObject(5, user.createdAt());
-      statement.setObject(6, user.updatedAt());
+      statement.setTimestamp(5, SqlTime.from(user.createdAt()));
+      statement.setTimestamp(6, SqlTime.from(user.updatedAt()));
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to save user", exception);

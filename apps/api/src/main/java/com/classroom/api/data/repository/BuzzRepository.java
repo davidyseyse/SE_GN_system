@@ -2,6 +2,7 @@ package com.classroom.api.data.repository;
 
 import com.classroom.api.data.Database;
 import com.classroom.api.data.DatabaseException;
+import com.classroom.api.data.SqlTime;
 import com.classroom.api.data.model.BuzzRecordEntity;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -32,7 +33,7 @@ public final class BuzzRepository {
       statement.setObject(4, record.userId());
       statement.setString(5, record.requestId());
       statement.setLong(6, record.receiptOrder());
-      statement.setObject(7, record.receivedAt());
+      statement.setTimestamp(7, SqlTime.from(record.receivedAt()));
       statement.setString(8, record.outcomeStatus());
       statement.setBoolean(9, record.successful());
       statement.executeUpdate();

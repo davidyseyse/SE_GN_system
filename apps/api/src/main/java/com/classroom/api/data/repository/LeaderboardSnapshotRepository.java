@@ -2,6 +2,8 @@ package com.classroom.api.data.repository;
 
 import com.classroom.api.data.Database;
 import com.classroom.api.data.DatabaseException;
+import com.classroom.api.data.JsonValue;
+import com.classroom.api.data.SqlTime;
 import com.classroom.api.data.model.LeaderboardSnapshotEntity;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -23,8 +25,8 @@ public final class LeaderboardSnapshotRepository {
          PreparedStatement statement = connection.prepareStatement(sql)) {
       statement.setObject(1, snapshot.id());
       statement.setObject(2, snapshot.classroomId());
-      statement.setObject(3, snapshot.snapshotAt());
-      statement.setString(4, snapshot.rankingData());
+      statement.setTimestamp(3, SqlTime.from(snapshot.snapshotAt()));
+      statement.setString(4, JsonValue.normalize(snapshot.rankingData()));
       statement.setString(5, snapshot.visibility());
       statement.executeUpdate();
     } catch (SQLException exception) {

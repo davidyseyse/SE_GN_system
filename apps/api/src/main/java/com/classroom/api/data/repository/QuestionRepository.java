@@ -2,6 +2,8 @@ package com.classroom.api.data.repository;
 
 import com.classroom.api.data.Database;
 import com.classroom.api.data.DatabaseException;
+import com.classroom.api.data.JsonValue;
+import com.classroom.api.data.SqlTime;
 import com.classroom.api.data.model.QuestionEntity;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -31,8 +33,8 @@ public final class QuestionRepository {
       statement.setString(4, question.type());
       statement.setString(5, question.state());
       statement.setString(6, question.prompt());
-      statement.setString(7, question.answerKey());
-      statement.setString(8, question.publicationSettings());
+      statement.setString(7, JsonValue.normalize(question.answerKey()));
+      statement.setString(8, JsonValue.normalize(question.publicationSettings()));
       statement.setInt(9, question.score());
       if (question.answerTimeLimitSeconds() == null) {
         statement.setNull(10, java.sql.Types.INTEGER);
@@ -40,9 +42,9 @@ public final class QuestionRepository {
         statement.setInt(10, question.answerTimeLimitSeconds());
       }
       statement.setObject(11, question.createdBy());
-      statement.setObject(12, question.createdAt());
-      statement.setObject(13, question.updatedAt());
-      statement.setObject(14, question.archivedAt());
+      statement.setTimestamp(12, SqlTime.from(question.createdAt()));
+      statement.setTimestamp(13, SqlTime.from(question.updatedAt()));
+      statement.setTimestamp(14, SqlTime.from(question.archivedAt()));
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to save question", exception);
@@ -117,16 +119,16 @@ public final class QuestionRepository {
       statement.setString(2, question.type());
       statement.setString(3, question.state());
       statement.setString(4, question.prompt());
-      statement.setString(5, question.answerKey());
-      statement.setString(6, question.publicationSettings());
+      statement.setString(5, JsonValue.normalize(question.answerKey()));
+      statement.setString(6, JsonValue.normalize(question.publicationSettings()));
       statement.setInt(7, question.score());
       if (question.answerTimeLimitSeconds() == null) {
         statement.setNull(8, java.sql.Types.INTEGER);
       } else {
         statement.setInt(8, question.answerTimeLimitSeconds());
       }
-      statement.setObject(9, question.updatedAt());
-      statement.setObject(10, question.archivedAt());
+      statement.setTimestamp(9, SqlTime.from(question.updatedAt()));
+      statement.setTimestamp(10, SqlTime.from(question.archivedAt()));
       statement.setObject(11, question.id());
       statement.setObject(12, question.classroomId());
       statement.executeUpdate();

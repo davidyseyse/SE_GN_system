@@ -25,8 +25,10 @@ public final class PostgresJdbcUrl {
       throw new IllegalArgumentException("DATABASE_URL must contain username and password");
     }
 
+    String querySuffix = "&sslmode=disable";
     return "jdbc:postgresql://" + hostPort + "/" + databaseName
         + "?user=" + credentialParts[0]
-        + "&password=" + credentialParts[1];
+        + "&password=" + credentialParts[1]
+        + querySuffix;
   }
 }

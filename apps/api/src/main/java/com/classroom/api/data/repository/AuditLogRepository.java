@@ -2,6 +2,8 @@ package com.classroom.api.data.repository;
 
 import com.classroom.api.data.Database;
 import com.classroom.api.data.DatabaseException;
+import com.classroom.api.data.JsonValue;
+import com.classroom.api.data.SqlTime;
 import com.classroom.api.data.model.AuditLogEntity;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -27,8 +29,8 @@ public final class AuditLogRepository {
       statement.setString(4, auditLog.actionType());
       statement.setString(5, auditLog.targetType());
       statement.setObject(6, auditLog.targetId());
-      statement.setString(7, auditLog.metadata());
-      statement.setObject(8, auditLog.createdAt());
+      statement.setString(7, JsonValue.normalize(auditLog.metadata()));
+      statement.setTimestamp(8, SqlTime.from(auditLog.createdAt()));
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to save audit log", exception);

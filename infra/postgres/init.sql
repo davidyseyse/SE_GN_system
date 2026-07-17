@@ -58,9 +58,18 @@ CREATE TABLE IF NOT EXISTS questions (
   CHECK (state IN ('DRAFT', 'READY', 'BUZZ_OPEN', 'ANSWER_OPEN', 'LOCKED', 'REVIEW', 'PUBLISHED', 'CLOSED'))
 );
 
-ALTER TABLE classrooms
-  ADD CONSTRAINT IF NOT EXISTS classrooms_active_question_fk
-  FOREIGN KEY (active_question_id) REFERENCES questions(id);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'classrooms_active_question_fk'
+  ) THEN
+    ALTER TABLE classrooms
+      ADD CONSTRAINT classrooms_active_question_fk
+      FOREIGN KEY (active_question_id) REFERENCES questions(id);
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS question_options (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

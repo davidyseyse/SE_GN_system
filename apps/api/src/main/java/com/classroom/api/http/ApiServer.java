@@ -49,7 +49,7 @@ public final class ApiServer {
     RouterContext routerContext = buildRouter(config);
     this.router = routerContext.router();
     this.webSocketServer = routerContext.webSocketServer();
-    this.server.createContext("/", new RootHandler(config));
+    this.server.createContext("/", new RootHandler(config, this.router));
     this.server.setExecutor(Executors.newCachedThreadPool());
   }
 
@@ -62,9 +62,9 @@ public final class ApiServer {
     private final ServerConfig config;
     private final Router router;
 
-    private RootHandler(ServerConfig config) {
+    private RootHandler(ServerConfig config, Router router) {
       this.config = config;
-      this.router = buildRouter(config).router();
+      this.router = router;
     }
 
     @Override
@@ -91,10 +91,12 @@ public final class ApiServer {
               "error", exception.getMessage()
           ));
         } catch (DatabaseException exception) {
+          exception.printStackTrace();
           HttpResponses.json(exchange, 409, Map.of(
               "error", exception.getMessage()
           ));
         } catch (Exception exception) {
+          exception.printStackTrace();
           HttpResponses.json(exchange, 500, Map.of(
               "error", "Internal server error"
           ));

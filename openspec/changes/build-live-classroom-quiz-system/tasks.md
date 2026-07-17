@@ -41,7 +41,7 @@
 
 ## 7. Validation and release readiness
 
-- [ ] 7.1 Add automated tests for authorization, question state transitions, buzz winner uniqueness, and submission locking
-- [ ] 7.2 Add integration or load tests covering 100 concurrent students, 50 concurrent buzz attempts, and reconnect recovery
-- [ ] 7.3 Verify export correctness, audit log coverage, and leaderboard recalculation behavior
-- [ ] 7.4 Prepare deployment documentation, operational checks, and rollback instructions for production release
+- [x] 7.1 Add automated tests for authorization, question state transitions, buzz winner uniqueness, and submission locking
+- [x] 7.2 Add integration or load tests covering 100 concurrent students, 50 concurrent buzz attempts, and reconnect recovery
+- [x] 7.3 Verify export correctness, audit log coverage, and leaderboard recalculation behavior
+- [x] 7.4 Prepare deployment documentation, operational checks, and rollback instructions for production release

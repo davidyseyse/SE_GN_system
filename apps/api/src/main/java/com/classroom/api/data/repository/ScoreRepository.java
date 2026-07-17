@@ -2,6 +2,7 @@ package com.classroom.api.data.repository;
 
 import com.classroom.api.data.Database;
 import com.classroom.api.data.DatabaseException;
+import com.classroom.api.data.SqlTime;
 import com.classroom.api.data.model.ScoreRecordEntity;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -32,7 +33,7 @@ public final class ScoreRepository {
       statement.setString(5, scoreRecord.sourceType());
       statement.setInt(6, scoreRecord.deltaScore());
       statement.setInt(7, scoreRecord.runningTotal());
-      statement.setObject(8, scoreRecord.createdAt());
+      statement.setTimestamp(8, SqlTime.from(scoreRecord.createdAt()));
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to save score record", exception);

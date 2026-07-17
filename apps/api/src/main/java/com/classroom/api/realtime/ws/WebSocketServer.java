@@ -85,8 +85,14 @@ public final class WebSocketServer {
       WebSocketFrameCodec.writeText(output, jsonWriter.toJson(syncEvent));
 
       readLoop(client);
+    } catch (IllegalArgumentException exception) {
+      // Invalid handshake requests are rejected by closing the socket.
+    } catch (IOException exception) {
+      if (!isExpectedDisconnect(exception)) {
+        exception.printStackTrace();
+      }
     } catch (Exception exception) {
-      // connection closed or invalid handshake
+      exception.printStackTrace();
     }
   }
 
@@ -115,7 +121,13 @@ public final class WebSocketServer {
 
   private static HandshakeRequest readHandshake(BufferedInputStream input) throws IOException {
     String requestLine = readHttpLine(input);
+    if (requestLine.isBlank()) {
+      throw new IOException("WebSocket handshake request line is empty");
+    }
     String[] requestParts = requestLine.split(" ");
+    if (requestParts.length < 2) {
+      throw new IOException("Invalid WebSocket handshake request line: " + requestLine);
+    }
     Map<String, String> headers = new LinkedHashMap<>();
     String line;
     while (!(line = readHttpLine(input)).isEmpty()) {
@@ -178,6 +190,12 @@ public final class WebSocketServer {
       throw new IllegalArgumentException(key + " is required");
     }
     return value;
+  }
+
+  private static boolean isExpectedDisconnect(IOException exception) {
+    String message = exception.getMessage();
+    return "WebSocket handshake request line is empty".equals(message)
+        || (message != null && message.contains("Connection reset"));
   }
 
   private record HandshakeRequest(String path, Map<String, String> queryParams, Map<String, String> headers) {
