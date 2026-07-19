@@ -62,7 +62,7 @@ public final class UserRepository {
     }
   }
 
-  public UserEntity findById(UUID userId) {
+  public UserEntity findById(UUID id) {
     String sql = """
         SELECT id, external_id, display_name, role, created_at, updated_at
         FROM users
@@ -70,7 +70,7 @@ public final class UserRepository {
         """;
     try (Connection connection = database.openConnection();
          PreparedStatement statement = connection.prepareStatement(sql)) {
-      statement.setObject(1, userId);
+      statement.setObject(1, id);
       ResultSet resultSet = statement.executeQuery();
       if (!resultSet.next()) {
         return null;
@@ -87,4 +87,5 @@ public final class UserRepository {
       throw new DatabaseException("Unable to find user", exception);
     }
   }
+
 }

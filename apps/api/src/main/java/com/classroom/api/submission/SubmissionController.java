@@ -8,17 +8,20 @@ import com.classroom.api.contract.Role;
 import com.classroom.api.data.model.ClassroomEntity;
 import com.classroom.api.data.model.QuestionEntity;
 import com.classroom.api.data.model.ScoreRecordEntity;
+import com.classroom.api.data.model.SheetConfigEntity;
 import com.classroom.api.data.model.SubmissionEntity;
 import com.classroom.api.data.model.UserEntity;
 import com.classroom.api.data.repository.ClassroomRepository;
 import com.classroom.api.data.repository.QuestionRepository;
 import com.classroom.api.data.repository.ScoreRepository;
+import com.classroom.api.data.repository.SheetConfigRepository;
 import com.classroom.api.data.repository.SubmissionRepository;
 import com.classroom.api.data.repository.UserRepository;
 import com.classroom.api.http.HttpHandlerFunction;
 import com.classroom.api.http.HttpResponses;
 import com.classroom.api.realtime.RealtimeEventBroker;
 import com.classroom.api.score.ClassroomScoringPolicy;
+import com.classroom.api.sheets.GoogleSheetsSyncService;
 import com.classroom.api.util.JsonMapParser;
 import java.time.Instant;
 import java.util.Map;
@@ -30,8 +33,10 @@ public final class SubmissionController {
   private final QuestionRepository questionRepository;
   private final SubmissionRepository submissionRepository;
   private final ScoreRepository scoreRepository;
+  private final SheetConfigRepository sheetConfigRepository;
   private final UserRepository userRepository;
   private final RealtimeEventBroker eventBroker;
+  private final GoogleSheetsSyncService googleSheetsSyncService;
 
   public SubmissionController(
       AuthorizationGuard authorizationGuard,
@@ -39,16 +44,20 @@ public final class SubmissionController {
       QuestionRepository questionRepository,
       SubmissionRepository submissionRepository,
       ScoreRepository scoreRepository,
+      SheetConfigRepository sheetConfigRepository,
       UserRepository userRepository,
-      RealtimeEventBroker eventBroker
+      RealtimeEventBroker eventBroker,
+      GoogleSheetsSyncService googleSheetsSyncService
   ) {
     this.authorizationGuard = authorizationGuard;
     this.classroomRepository = classroomRepository;
     this.questionRepository = questionRepository;
     this.submissionRepository = submissionRepository;
     this.scoreRepository = scoreRepository;
+    this.sheetConfigRepository = sheetConfigRepository;
     this.userRepository = userRepository;
     this.eventBroker = eventBroker;
+    this.googleSheetsSyncService = googleSheetsSyncService;
   }
 
   public HttpHandlerFunction submitHandler() {
@@ -84,6 +93,7 @@ public final class SubmissionController {
           decision.reviewStatus() == null ? now : null
       );
       submissionRepository.save(submission);
+      syncSubmissionToSheet(question, user, submission);
 
       if (decision.awardedScore() != null) {
         int runningTotal = scoreRepository.currentTotal(classroom.id(), user.id()) + decision.awardedScore();
@@ -173,6 +183,44 @@ public final class SubmissionController {
     };
   }
 
+  public HttpHandlerFunction updateAnswerHandler() {
+    return exchange -> {
+      authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
+      Map<String, String> request = JsonMapParser.parseObject(exchange.readRequestBody());
+      UUID submissionId = UUID.fromString(request.getOrDefault("submissionId", ""));
+      String answer = request.getOrDefault("answer", "");
+      SubmissionEntity submission = submissionRepository.findById(submissionId);
+      if (submission == null) {
+        throw new IllegalArgumentException("Submission not found");
+      }
+
+      SubmissionEntity updated = new SubmissionEntity(
+          submission.id(),
+          submission.classroomId(),
+          submission.questionId(),
+          submission.userId(),
+          submission.attemptNumber(),
+          answer,
+          submission.submissionStatus(),
+          submission.isCorrect(),
+          submission.awardedScore(),
+          submission.reviewStatus(),
+          submission.submittedAt(),
+          submission.reviewedAt()
+      );
+      submissionRepository.updateAnswer(updated);
+
+      QuestionEntity question = questionRepository.findById(submission.classroomId(), submission.questionId());
+      UserEntity user = userRepository.findById(submission.userId());
+      syncSubmissionToSheet(question, user, updated);
+
+      HttpResponses.json(exchange, 200, Map.of(
+          "submissionId", updated.id().toString(),
+          "answer", updated.submittedAnswer()
+      ));
+    };
+  }
+
   private SubmissionDecision decide(ClassroomEntity classroom, QuestionEntity question, String answer) {
     QuestionType type = QuestionType.valueOf(question.type());
     return switch (type) {
@@ -214,6 +262,24 @@ public final class SubmissionController {
       throw new IllegalArgumentException("User not found");
     }
     return user;
+  }
+
+  private void syncSubmissionToSheet(QuestionEntity question, UserEntity user, SubmissionEntity submission) {
+    Map<String, String> settings = JsonMapParser.parseObject(question.publicationSettings());
+    String sheetConfigId = settings.getOrDefault("sheetConfigId", "").replace("\"", "").trim();
+    String targetCell = settings.getOrDefault("targetCell", "").replace("\"", "").trim();
+    if (sheetConfigId.isEmpty() || targetCell.isEmpty()) {
+      return;
+    }
+
+    SheetConfigEntity config = sheetConfigRepository.findById(UUID.fromString(sheetConfigId));
+    if (config == null) {
+      return;
+    }
+
+    String answerValue = submission.submittedAnswer().replace("\"", "");
+    String syncValue = user.displayName() + "：" + answerValue;
+    googleSheetsSyncService.updateCell(config.sheetId(), targetCell, syncValue);
   }
 
   private record SubmissionDecision(Boolean isCorrect, Integer awardedScore, String reviewStatus) {

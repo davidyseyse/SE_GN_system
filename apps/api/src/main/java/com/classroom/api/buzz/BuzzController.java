@@ -24,6 +24,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.Comparator;
 
 public final class BuzzController {
   private final AuthorizationGuard authorizationGuard;
@@ -140,6 +141,58 @@ public final class BuzzController {
     };
   }
 
+  public HttpHandlerFunction cancelHandler() {
+    return exchange -> {
+      AuthContext authContext = authorizationGuard.requireRoles(exchange, Role.STUDENT);
+      Map<String, String> request = JsonMapParser.parseObject(exchange.readRequestBody());
+      ClassroomEntity classroom = requireClassroom(request.get("classroomCode"));
+      QuestionEntity question = requireQuestion(classroom.id(), request.get("questionId"));
+      UserEntity user = requireUser(authContext.subject());
+
+      BuzzRecordEntity winner = buzzRepository.findByQuestionId(question.id()).stream()
+          .filter(BuzzRecordEntity::successful)
+          .max(Comparator.comparingLong(BuzzRecordEntity::receiptOrder))
+          .orElseThrow(() -> new IllegalArgumentException("No active buzz winner"));
+      if (!winner.userId().equals(user.id())) {
+        throw new SecurityException("只有搶答成功者可以取消鎖定");
+      }
+
+      redisBuzzLockService.delete("buzz:winner:" + question.id());
+      eventBroker.publish(classroom.classroomCode(), "BUZZ_CANCELLED", Map.of(
+          "questionId", question.id().toString(),
+          "userId", user.id().toString()
+      ));
+
+      HttpResponses.json(exchange, 200, Map.of(
+          "questionId", question.id().toString(),
+          "status", "OPEN"
+      ));
+    };
+  }
+
+  public HttpHandlerFunction resetHandler() {
+    return exchange -> {
+      authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
+      Map<String, String> request = JsonMapParser.parseObject(exchange.readRequestBody());
+      ClassroomEntity classroom = requireClassroom(request.get("classroomCode"));
+      String questionIdValue = request.getOrDefault("questionId", "").trim();
+
+      if (!questionIdValue.isEmpty()) {
+        QuestionEntity question = requireQuestion(classroom.id(), questionIdValue);
+        resetQuestion(classroom, question);
+      } else {
+        for (QuestionEntity question : questionRepository.listByClassroom(classroom.id())) {
+          resetQuestion(classroom, question);
+        }
+      }
+
+      HttpResponses.json(exchange, 200, Map.of(
+          "classroomCode", classroom.classroomCode(),
+          "status", "RESET"
+      ));
+    };
+  }
+
   private ClassroomEntity requireClassroom(String classroomCode) {
     if (classroomCode == null || classroomCode.isBlank()) {
       throw new IllegalArgumentException("classroomCode is required");
@@ -168,5 +221,33 @@ public final class BuzzController {
       throw new IllegalArgumentException("User not found");
     }
     return user;
+  }
+
+  private void resetQuestion(ClassroomEntity classroom, QuestionEntity question) {
+    redisBuzzLockService.delete("buzz:winner:" + question.id());
+    redisBuzzLockService.delete("buzz:sequence:" + question.id());
+    QuestionState currentState = QuestionState.valueOf(question.state());
+    if (currentState == QuestionState.BUZZ_OPEN || currentState == QuestionState.ANSWER_OPEN || currentState == QuestionState.LOCKED) {
+      QuestionEntity updated = new QuestionEntity(
+          question.id(),
+          question.classroomId(),
+          question.ordinal(),
+          question.type(),
+          QuestionState.READY.name(),
+          question.prompt(),
+          question.answerKey(),
+          question.publicationSettings(),
+          question.score(),
+          question.answerTimeLimitSeconds(),
+          question.createdBy(),
+          question.createdAt(),
+          Instant.now(),
+          question.archivedAt()
+      );
+      questionRepository.update(updated);
+    }
+    eventBroker.publish(classroom.classroomCode(), "BUZZ_RESET", Map.of(
+        "questionId", question.id().toString()
+    ));
   }
 }

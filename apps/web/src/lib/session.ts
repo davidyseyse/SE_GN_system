@@ -1,12 +1,14 @@
 import type { Role } from "@classroom/shared";
 
-type StoredSession = {
+export type StoredSession = {
   token: string;
   userId: string;
   displayName: string;
   role: Role;
   classroomCode?: string;
   classroomId?: string;
+  studentId?: string;
+  groupNumber?: number;
 };
 
 const STORAGE_KEY = "classroom-web-session";
@@ -29,4 +31,15 @@ export function writeSession(session: StoredSession) {
 
 export function clearSession() {
   localStorage.removeItem(STORAGE_KEY);
+}
+
+export function hasSession(role?: Role) {
+  const session = readSession();
+  if (!session) {
+    return false;
+  }
+  if (role && session.role !== role) {
+    return false;
+  }
+  return true;
 }

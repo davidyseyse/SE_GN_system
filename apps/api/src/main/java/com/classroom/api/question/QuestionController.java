@@ -13,6 +13,7 @@ import com.classroom.api.data.repository.UserRepository;
 import com.classroom.api.http.HttpExchangeAdapter;
 import com.classroom.api.http.HttpHandlerFunction;
 import com.classroom.api.http.HttpResponses;
+import com.classroom.api.realtime.RealtimeEventBroker;
 import com.classroom.api.util.JsonMapParser;
 import java.io.IOException;
 import java.time.Instant;
@@ -26,18 +27,21 @@ public final class QuestionController {
   private final ClassroomRepository classroomRepository;
   private final UserRepository userRepository;
   private final AuthorizationGuard authorizationGuard;
+  private final RealtimeEventBroker eventBroker;
   private final QuestionStateMachine stateMachine;
 
   public QuestionController(
       QuestionRepository questionRepository,
       ClassroomRepository classroomRepository,
       UserRepository userRepository,
-      AuthorizationGuard authorizationGuard
+      AuthorizationGuard authorizationGuard,
+      RealtimeEventBroker eventBroker
   ) {
     this.questionRepository = questionRepository;
     this.classroomRepository = classroomRepository;
     this.userRepository = userRepository;
     this.authorizationGuard = authorizationGuard;
+    this.eventBroker = eventBroker;
     this.stateMachine = new QuestionStateMachine();
   }
 
@@ -193,6 +197,11 @@ public final class QuestionController {
       );
 
       questionRepository.update(updated);
+      eventBroker.publish(classroom.classroomCode(), "QUESTION_STATE_CHANGED", Map.of(
+          "questionId", updated.id().toString(),
+          "state", updated.state(),
+          "prompt", updated.prompt()
+      ));
       HttpResponses.json(exchange, 200, Map.of(
           "question", serialize(updated),
           "event", Map.of(

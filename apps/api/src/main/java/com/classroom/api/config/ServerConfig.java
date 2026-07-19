@@ -15,6 +15,8 @@ public record ServerConfig(
     String jwtIssuer,
     String jwtAudience,
     long jwtTtlSeconds,
+    String adminUsername,
+    String adminPassword,
     ServiceEndpoints endpoints
 ) {
   public static ServerConfig load() {
@@ -29,6 +31,8 @@ public record ServerConfig(
     String jwtIssuer = resolve("JWT_ISSUER", "classroom-api", fileEnv);
     String jwtAudience = resolve("JWT_AUDIENCE", "classroom-clients", fileEnv);
     long jwtTtlSeconds = Long.parseLong(resolve("JWT_TTL_SECONDS", "28800", fileEnv));
+    String adminUsername = resolve("ADMIN_USERNAME", "teacher", fileEnv);
+    String adminPassword = resolve("ADMIN_PASSWORD", "teacher123", fileEnv);
     String apiBaseUrl = resolve("API_BASE_URL", "http://localhost:" + port, fileEnv);
     String websocketUrl = resolve("WEBSOCKET_URL", "ws://localhost:" + websocketPort + "/ws", fileEnv);
     String websocketPath = resolve("WEBSOCKET_PATH", "/ws", fileEnv);
@@ -45,6 +49,8 @@ public record ServerConfig(
         jwtIssuer,
         jwtAudience,
         jwtTtlSeconds,
+        adminUsername,
+        adminPassword,
         endpoints
     );
   }

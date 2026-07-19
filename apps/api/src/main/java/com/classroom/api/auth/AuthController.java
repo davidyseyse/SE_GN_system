@@ -43,6 +43,68 @@ public final class AuthController {
     };
   }
 
+  public HttpHandlerFunction adminLoginHandler() {
+    return exchange -> {
+      Map<String, String> values = JsonMapParser.parseObject(exchange.readRequestBody());
+      String username = values.getOrDefault("username", "").trim();
+      String password = values.getOrDefault("password", "").trim();
+      if (username.isEmpty() || password.isEmpty()) {
+        throw new IllegalArgumentException("username and password are required");
+      }
+      if (!config.adminUsername().equals(username) || !config.adminPassword().equals(password)) {
+        throw new SecurityException("帳號或密碼錯誤");
+      }
+
+      String token = authTokenService.issueToken("teacher-" + username, Role.TEACHER, username);
+      HttpResponses.json(exchange, 200, Map.of(
+          "accessToken", token,
+          "tokenType", "Bearer",
+          "expiresInSeconds", config.jwtTtlSeconds(),
+          "user", Map.of(
+              "id", "teacher-" + username,
+              "displayName", username,
+              "role", Role.TEACHER.name()
+          )
+      ));
+    };
+  }
+
+  public HttpHandlerFunction studentLoginHandler() {
+    return exchange -> {
+      Map<String, String> values = JsonMapParser.parseObject(exchange.readRequestBody());
+      String studentId = values.getOrDefault("studentId", "").trim();
+      String groupNumberValue = values.getOrDefault("groupNumber", "").trim();
+      if (studentId.isEmpty() || groupNumberValue.isEmpty()) {
+        throw new IllegalArgumentException("studentId and groupNumber are required");
+      }
+
+      int groupNumber;
+      try {
+        groupNumber = Integer.parseInt(groupNumberValue);
+      } catch (NumberFormatException exception) {
+        throw new IllegalArgumentException("groupNumber must be a positive integer");
+      }
+      if (groupNumber <= 0) {
+        throw new IllegalArgumentException("groupNumber must be a positive integer");
+      }
+
+      String displayName = studentId + " / 第" + groupNumber + "組";
+      String token = authTokenService.issueToken(studentId, Role.STUDENT, displayName);
+      HttpResponses.json(exchange, 200, Map.of(
+          "accessToken", token,
+          "tokenType", "Bearer",
+          "expiresInSeconds", config.jwtTtlSeconds(),
+          "user", Map.of(
+              "id", studentId,
+              "displayName", displayName,
+              "role", Role.STUDENT.name()
+          ),
+          "studentId", studentId,
+          "groupNumber", groupNumber
+      ));
+    };
+  }
+
   public AuthTokenService authTokenService() {
     return authTokenService;
   }

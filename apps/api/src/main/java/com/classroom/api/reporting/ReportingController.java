@@ -90,6 +90,30 @@ public final class ReportingController {
     };
   }
 
+  public HttpHandlerFunction submissionsHandler() {
+    return exchange -> {
+      authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
+      ClassroomEntity classroom = requireClassroom(exchange.queryParam("classroomCode"));
+      QuestionEntity question = requireQuestion(classroom.id(), exchange.queryParam("questionId"));
+      List<SubmissionEntity> submissions = submissionRepository.listByQuestionId(question.id());
+      HttpResponses.json(exchange, 200, Map.of(
+          "classroomCode", classroom.classroomCode(),
+          "questionId", question.id().toString(),
+          "submissions", submissions.stream().map(submission -> {
+            UserEntity user = userRepository.findById(submission.userId());
+            return Map.of(
+                "submissionId", submission.id().toString(),
+                "userId", submission.userId().toString(),
+                "displayName", user == null ? submission.userId().toString() : user.displayName(),
+                "answer", submission.submittedAnswer(),
+                "reviewStatus", submission.reviewStatus() == null ? "" : submission.reviewStatus(),
+                "submittedAt", submission.submittedAt().toString()
+            );
+          }).toList()
+      ));
+    };
+  }
+
   public HttpHandlerFunction exportHandler() {
     return exchange -> {
       AuthContext authContext = authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);

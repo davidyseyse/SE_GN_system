@@ -24,22 +24,9 @@ type RealtimeConfig = {
   path: string;
 };
 
-export type TeacherSession = {
-  token: string;
-  userId: string;
-  displayName: string;
-};
-
-export type StudentSession = TeacherSession;
-
-export type ClassroomSummary = {
-  classroom: {
-    id: string;
-    code: string;
-    name: string;
-    status: string;
-    leaderboardVisibility: string;
-  };
+export type StudentLoginResponse = TokenResponse & {
+  studentId: string;
+  groupNumber: number;
 };
 
 export type QuestionView = ClassroomQuestionContract & {
@@ -47,6 +34,13 @@ export type QuestionView = ClassroomQuestionContract & {
   publicationSettings: string;
   answerTimeLimitSeconds: string;
   archivedAt: string;
+};
+
+export type SheetConfigView = {
+  id: string;
+  name: string;
+  sheetId: string;
+  createdAt: string;
 };
 
 async function request<T>(path: string, init?: RequestInit, token?: string): Promise<T> {
@@ -63,15 +57,22 @@ async function request<T>(path: string, init?: RequestInit, token?: string): Pro
 
   const data = await response.json();
   if (!response.ok) {
-    throw new Error(data.error ?? data.message ?? "Request failed");
+    throw new Error(data.error ?? data.message ?? "請求失敗");
   }
   return data as T;
 }
 
-export async function issueToken(displayName: string, role: Role, userId: string): Promise<TokenResponse> {
-  return request<TokenResponse>("/api/auth/token", {
+export async function adminLogin(username: string, password: string): Promise<TokenResponse> {
+  return request<TokenResponse>("/api/auth/admin-login", {
     method: "POST",
-    body: JSON.stringify({ userId, displayName, role })
+    body: JSON.stringify({ username, password })
+  });
+}
+
+export async function studentLogin(studentId: string, groupNumber: number): Promise<StudentLoginResponse> {
+  return request<StudentLoginResponse>("/api/auth/student-login", {
+    method: "POST",
+    body: JSON.stringify({ studentId, groupNumber })
   });
 }
 
@@ -80,14 +81,40 @@ export async function createClassroom(
   name: string,
   leaderboardVisibility: LeaderboardVisibility,
   settings: string
-): Promise<ClassroomSummary> {
-  return request<ClassroomSummary>("/api/classrooms", {
+) {
+  return request<{
+    classroom: {
+      id: string;
+      code: string;
+      name: string;
+      status: string;
+      leaderboardVisibility: string;
+    };
+  }>("/api/classrooms", {
     method: "POST",
     body: JSON.stringify({
       name,
       leaderboardVisibility,
       participationSettings: settings
     })
+  }, token);
+}
+
+export async function listSheetConfigs(token: string) {
+  return request<{ configs: SheetConfigView[] }>("/api/sheet-configs", undefined, token);
+}
+
+export async function createSheetConfig(token: string, name: string, sheetId: string) {
+  return request<{ config: SheetConfigView }>("/api/sheet-configs", {
+    method: "POST",
+    body: JSON.stringify({ name, sheetId })
+  }, token);
+}
+
+export async function deleteSheetConfig(token: string, configId: string) {
+  return request<{ deleted: string }>("/api/sheet-configs/delete", {
+    method: "POST",
+    body: JSON.stringify({ configId })
   }, token);
 }
 
@@ -112,13 +139,6 @@ export async function getMembers(token: string, classroomCode: string) {
     undefined,
     token
   );
-}
-
-export async function getPresence(token: string, classroomCode: string) {
-  return request<{
-    onlineCount: number;
-    participants: Array<{ userId: string; role: Role; presenceStatus: string; lastSeenAt: string }>;
-  }>(`/api/classrooms/presence?classroomCode=${encodeURIComponent(classroomCode)}`, undefined, token);
 }
 
 export async function createQuestion(
@@ -191,11 +211,33 @@ export async function submitAnswer(token: string, classroomCode: string, questio
 }
 
 export async function submitBuzz(token: string, classroomCode: string, questionId: string) {
-  return request<{ accepted: boolean; outcomeStatus: string }>(
+  return request<{ accepted: boolean; outcomeStatus: string; requestId: string }>(
     "/api/buzz",
     {
       method: "POST",
       body: JSON.stringify({ classroomCode, questionId, requestId: crypto.randomUUID() })
+    },
+    token
+  );
+}
+
+export async function cancelBuzz(token: string, classroomCode: string, questionId: string) {
+  return request<{ status: string }>(
+    "/api/buzz/cancel",
+    {
+      method: "POST",
+      body: JSON.stringify({ classroomCode, questionId })
+    },
+    token
+  );
+}
+
+export async function resetBuzz(token: string, classroomCode: string, questionId?: string) {
+  return request<{ status: string }>(
+    "/api/buzz/reset",
+    {
+      method: "POST",
+      body: JSON.stringify({ classroomCode, questionId: questionId ?? "" })
     },
     token
   );

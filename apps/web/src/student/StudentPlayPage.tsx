@@ -1,11 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { getLeaderboard, listQuestions, submitAnswer, submitBuzz } from "../lib/api";
+import { cancelBuzz, getLeaderboard, listQuestions, submitAnswer, submitBuzz } from "../lib/api";
 import { clearSession, readSession } from "../lib/session";
+import { formatQuestionState, formatRealtimeEventType, formatRealtimeStatus } from "../lib/text";
 import { useRealtimeFeed } from "../realtime/useRealtimeFeed";
 
 type RealtimeEventView = {
   type: string;
   occurredAt: string;
+  payload?: {
+    userId?: string;
+    questionId?: string;
+    successful?: boolean;
+  };
 };
 
 export function StudentPlayPage() {
@@ -13,16 +19,33 @@ export function StudentPlayPage() {
   const [questions, setQuestions] = useState<Array<Record<string, unknown>>>([]);
   const [answer, setAnswer] = useState("");
   const [leaderboard, setLeaderboard] = useState<Array<Record<string, unknown>>>([]);
-  const [notice, setNotice] = useState("Waiting for the teacher to open a question.");
+  const [notice, setNotice] = useState("請等待教師開放搶答。");
   const realtime = useRealtimeFeed(session?.token ?? null, session?.classroomCode ?? null);
 
   const activeQuestion = useMemo(() => {
     const visible = questions.find((question) => {
       const state = String(question.state);
-      return state === "ANSWER_OPEN" || state === "BUZZ_OPEN" || state === "PUBLISHED";
+      return state === "ANSWER_OPEN" || state === "BUZZ_OPEN" || state === "PUBLISHED" || state === "LOCKED";
     });
     return visible ?? null;
   }, [questions]);
+
+  const buzzWinnerUserId = useMemo(() => {
+    const questionId = activeQuestion ? String(activeQuestion.id) : "";
+    let winner = "";
+    for (const event of realtime.events as RealtimeEventView[]) {
+      if (event.payload?.questionId !== questionId) {
+        continue;
+      }
+      if (event.type === "BUZZ_RESULT" && event.payload?.successful) {
+        winner = String(event.payload.userId ?? "");
+      }
+      if (event.type === "BUZZ_CANCELLED" || event.type === "BUZZ_RESET") {
+        winner = "";
+      }
+    }
+    return winner;
+  }, [activeQuestion, realtime.events]);
 
   useEffect(() => {
     if (!session?.token || !session.classroomCode) {
@@ -38,21 +61,29 @@ export function StudentPlayPage() {
     return (
       <section className="center-panel">
         <div className="panel student-panel">
-          <h2>No Student Session</h2>
-          <button onClick={() => clearSession()}>Reset Session</button>
+          <h2>尚未加入搶答大廳</h2>
+          <p className="muted">請先登入學生帳號並加入課堂。</p>
+          <button onClick={() => clearSession()}>清除會話</button>
         </div>
       </section>
     );
   }
 
   const activeSession = session;
+  const currentUserId = session.userId;
+  const state = activeQuestion ? String(activeQuestion.state) : "READY";
+  const isBuzzOpen = state === "BUZZ_OPEN";
+  const isWinner = buzzWinnerUserId !== "" && buzzWinnerUserId === currentUserId;
+  const isLoser = buzzWinnerUserId !== "" && buzzWinnerUserId !== currentUserId;
+  const canBuzz = isBuzzOpen && buzzWinnerUserId === "";
+  const canAnswer = isWinner || state === "ANSWER_OPEN";
 
   async function handleSubmitAnswer() {
     if (!activeQuestion) {
       return;
     }
     const result = await submitAnswer(activeSession.token, activeSession.classroomCode!, String(activeQuestion.id), answer);
-    setNotice(`Submission recorded. Review status: ${result.reviewStatus || "graded"}`);
+    setNotice(`作答已送出。批改狀態：${result.reviewStatus || "已評分"}`);
     setAnswer("");
   }
 
@@ -61,39 +92,71 @@ export function StudentPlayPage() {
       return;
     }
     const result = await submitBuzz(activeSession.token, activeSession.classroomCode!, String(activeQuestion.id));
-    setNotice(result.accepted ? "You won the buzz." : `Buzz rejected: ${result.outcomeStatus}`);
+    setNotice(result.accepted ? "你搶答成功，請輸入答案。" : "你未搶到答題權。");
+  }
+
+  async function handleCancelLock() {
+    if (!activeQuestion) {
+      return;
+    }
+    await cancelBuzz(activeSession.token, activeSession.classroomCode!, String(activeQuestion.id));
+    setNotice("已取消鎖定，所有人重新獲得競爭權。");
   }
 
   return (
     <section className="grid-layout student-live">
       <div className="panel hero-panel">
-        <h2>{activeSession.classroomCode}</h2>
-        <p className="muted">Realtime status: {realtime.status}</p>
+        <h2>搶答大廳</h2>
+        <p className="muted">
+          學號：{session.studentId ?? session.userId} / 組別：{session.groupNumber ?? "-"} / 課堂代碼：{activeSession.classroomCode}
+        </p>
+        <p className="muted">即時連線狀態：{formatRealtimeStatus(realtime.status)}</p>
         <p className="notice">{notice}</p>
       </div>
 
       <div className="panel">
-        <h3>Current Question</h3>
+        <h3>目前題目</h3>
         {activeQuestion ? (
           <div className="question-stage">
             <strong>{String(activeQuestion.prompt)}</strong>
-            <span className="pill">{String(activeQuestion.state)}</span>
+            <span className={`pill ${canBuzz ? "pill-open" : isWinner ? "pill-won" : isLoser ? "pill-lost" : ""}`}>
+              {formatQuestionState(String(activeQuestion.state))}
+            </span>
+            {buzzWinnerUserId ? <p className="muted">目前搶答成功者：{buzzWinnerUserId}</p> : null}
             {String(activeQuestion.state) === "BUZZ_OPEN" ? (
-              <button className="buzz-button" onClick={() => void handleBuzz()}>Buzz In</button>
-            ) : (
               <>
-                <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="Type your answer" />
-                <button onClick={() => void handleSubmitAnswer()}>Submit Answer</button>
+                <button className={`buzz-button ${canBuzz ? "buzz-button-open" : isWinner ? "buzz-button-won" : "buzz-button-locked"}`} disabled={!canBuzz} onClick={() => void handleBuzz()}>
+                  {canBuzz ? "搶答" : isWinner ? "已搶答" : isLoser ? "已被搶答" : "未開放"}
+                </button>
+                {isWinner ? (
+                  <>
+                    <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="請輸入答案" />
+                    <div className="action-row">
+                      <button onClick={() => void handleSubmitAnswer()}>提交答案</button>
+                      <button type="button" className="secondary-button" onClick={() => void handleCancelLock()}>取消鎖定</button>
+                    </div>
+                  </>
+                ) : null}
               </>
+            ) : canAnswer ? (
+              <>
+                <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="請輸入答案" />
+                <button onClick={() => void handleSubmitAnswer()}>提交答案</button>
+              </>
+            ) : (
+              <button className="buzz-button buzz-button-locked" disabled>未開放</button>
             )}
           </div>
         ) : (
-          <p className="muted">No active question yet.</p>
+          <div className="question-stage">
+            <span className="pill">未開放</span>
+            <button className="buzz-button buzz-button-locked" disabled>未開放</button>
+          </div>
         )}
       </div>
 
       <div className="panel">
-        <h3>Personal Leaderboard View</h3>
+        <h3>排行榜</h3>
         <ol className="rank-list">
           {leaderboard.map((entry) => (
             <li key={String(entry.userId)}>
@@ -105,11 +168,11 @@ export function StudentPlayPage() {
       </div>
 
       <div className="panel">
-        <h3>Realtime Feed</h3>
+        <h3>即時訊息</h3>
         <div className="feed">
           {(realtime.events as RealtimeEventView[]).slice(-10).reverse().map((event, index) => (
             <div key={`${event.occurredAt}-${index}`} className="feed-item">
-              <strong>{event.type}</strong>
+              <strong>{formatRealtimeEventType(event.type)}</strong>
               <span>{event.occurredAt}</span>
             </div>
           ))}

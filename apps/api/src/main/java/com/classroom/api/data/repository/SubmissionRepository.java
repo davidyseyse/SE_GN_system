@@ -135,6 +135,22 @@ public final class SubmissionRepository {
     }
   }
 
+  public void updateAnswer(SubmissionEntity submission) {
+    String sql = """
+        UPDATE submissions
+        SET submitted_answer = CAST(? AS jsonb)
+        WHERE id = ?
+        """;
+    try (Connection connection = database.openConnection();
+         PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setString(1, JsonValue.normalize(submission.submittedAnswer()));
+      statement.setObject(2, submission.id());
+      statement.executeUpdate();
+    } catch (SQLException exception) {
+      throw new DatabaseException("Unable to update submission answer", exception);
+    }
+  }
+
   private static SubmissionEntity mapSubmission(ResultSet resultSet) throws SQLException {
     return new SubmissionEntity(
         resultSet.getObject("id", UUID.class),

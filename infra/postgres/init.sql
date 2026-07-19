@@ -26,6 +26,14 @@ CREATE TABLE IF NOT EXISTS classrooms (
   CHECK (leaderboard_visibility IN ('HIDDEN', 'TOP_3', 'TOP_10', 'FULL'))
 );
 
+CREATE TABLE IF NOT EXISTS sheet_configs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name VARCHAR(200) NOT NULL,
+  sheet_id VARCHAR(200) NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS classroom_members (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   classroom_id UUID NOT NULL REFERENCES classrooms(id) ON DELETE CASCADE,

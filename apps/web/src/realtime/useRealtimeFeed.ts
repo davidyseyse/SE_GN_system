@@ -5,7 +5,9 @@ type RealtimeEvent = {
   type: string;
   classroomCode: string;
   occurredAt: string;
-  payload: Record<string, unknown>;
+  payload: Record<string, unknown> & {
+    events?: RealtimeEvent[];
+  };
 };
 
 export function useRealtimeFeed(token: string | null, classroomCode: string | null) {
@@ -18,16 +20,13 @@ export function useRealtimeFeed(token: string | null, classroomCode: string | nu
       return;
     }
 
+    const activeToken = token;
+    const activeClassroomCode = classroomCode;
     let cancelled = false;
 
     async function connect() {
       try {
         setStatus("connecting");
-        if (!token || !classroomCode) {
-          return;
-        }
-        const activeToken: string = token;
-        const activeClassroomCode: string = classroomCode;
         const config = await getRealtimeConfig(activeToken);
         const session = await openRealtimeSession(activeToken, activeClassroomCode);
         if (cancelled) {
@@ -46,6 +45,10 @@ export function useRealtimeFeed(token: string | null, classroomCode: string | nu
         socket.onclose = () => setStatus("error");
         socket.onmessage = (message) => {
           const parsed = JSON.parse(message.data) as RealtimeEvent;
+          if (parsed.type === "session.resynced" && Array.isArray(parsed.payload?.events)) {
+            setEvents(parsed.payload.events);
+            return;
+          }
           setEvents((current) => [...current, parsed]);
         };
       } catch {

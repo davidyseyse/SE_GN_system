@@ -28,6 +28,10 @@ public final class RedisBuzzLockService {
     return Long.parseLong(response);
   }
 
+  public void delete(String key) {
+    send("DEL", key);
+  }
+
   private String send(String... args) {
     try (Socket socket = new Socket(host, port);
          BufferedOutputStream output = new BufferedOutputStream(socket.getOutputStream());
