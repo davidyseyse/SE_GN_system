@@ -7,8 +7,8 @@ import { writeSession } from "../lib/session";
 export function LoginPage() {
   const navigate = useNavigate();
   const [role, setRole] = useState<Role>("TEACHER");
-  const [username, setUsername] = useState("teacher");
-  const [password, setPassword] = useState("teacher123");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [studentId, setStudentId] = useState("");
   const [groupNumber, setGroupNumber] = useState("");
   const [classroomCode, setClassroomCode] = useState("");
@@ -70,7 +70,13 @@ export function LoginPage() {
           {role === "TEACHER" ? (
             <>
               <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="管理者帳號" />
-              <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" placeholder="管理者密碼" />
+              <input
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                type="password"
+                autoComplete="current-password"
+                placeholder="管理者密碼"
+              />
               <button onClick={() => void handleTeacherLogin()}>登入管理主控台</button>
             </>
           ) : (

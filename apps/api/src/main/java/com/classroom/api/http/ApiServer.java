@@ -148,7 +148,7 @@ public final class ApiServer {
     GoogleSheetsSyncService googleSheetsSyncService = new GoogleSheetsSyncService(config);
     SheetConfigController sheetConfigController = new SheetConfigController(authorizationGuard, sheetConfigRepository);
     BuzzController buzzController = new BuzzController(authorizationGuard, classroomRepository, questionRepository, userRepository, buzzRepository, scoreRepository, redisBuzzLockService, eventBroker);
-    SubmissionController submissionController = new SubmissionController(authorizationGuard, classroomRepository, questionRepository, submissionRepository, scoreRepository, sheetConfigRepository, userRepository, eventBroker, googleSheetsSyncService);
+    SubmissionController submissionController = new SubmissionController(authorizationGuard, classroomRepository, questionRepository, submissionRepository, scoreRepository, sheetConfigRepository, userRepository, buzzRepository, eventBroker, googleSheetsSyncService);
     LeaderboardService leaderboardService = new LeaderboardService(scoreRepository, userRepository, leaderboardSnapshotRepository);
     ScoreController scoreController = new ScoreController(authorizationGuard, classroomRepository, userRepository, scoreRepository, leaderboardService);
     ReportingController reportingController = new ReportingController(authorizationGuard, classroomRepository, questionRepository, submissionRepository, buzzRepository, scoreRepository, userRepository, auditLogRepository);
@@ -176,6 +176,7 @@ public final class ApiServer {
     router.add("POST", "/api/questions", questionController.createQuestionHandler());
     router.add("PUT", "/api/questions", questionController.updateQuestionHandler());
     router.add("POST", "/api/questions/archive", questionController.archiveQuestionHandler());
+    router.add("POST", "/api/questions/delete", questionController.deleteQuestionHandler());
     router.add("POST", "/api/questions/reorder", questionController.reorderQuestionsHandler());
     router.add("GET", "/api/questions", questionController.listQuestionsHandler());
     router.add("POST", "/api/questions/state", questionController.transitionStateHandler());
@@ -185,6 +186,7 @@ public final class ApiServer {
     router.add("GET", "/api/buzz/history", buzzController.historyHandler());
     router.add("POST", "/api/submissions", submissionController.submitHandler());
     router.add("POST", "/api/submissions/answer", submissionController.updateAnswerHandler());
+    router.add("POST", "/api/submissions/delete", submissionController.deleteAnswerHandler());
     router.add("POST", "/api/submissions/review", submissionController.reviewHandler());
     router.add("GET", "/api/leaderboard", scoreController.leaderboardHandler());
     router.add("GET", "/api/scores/detail", scoreController.detailHandler());

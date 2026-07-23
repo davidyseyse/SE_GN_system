@@ -9,6 +9,7 @@ import {
   getLeaderboard,
   getMembers,
   getSummary,
+  joinClassroom,
   listQuestions,
   listSheetConfigs,
   resetBuzz,
@@ -41,6 +42,17 @@ type SubmissionView = {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8080";
 const defaultSettings = "{\"buzzBonus\":5,\"wrongAnswerPenalty\":2,\"showAnswer\":false}";
+
+const allowedQuestionTransitions: Record<string, string[]> = {
+  DRAFT: ["READY", "CLOSED"],
+  READY: ["BUZZ_OPEN", "ANSWER_OPEN", "CLOSED"],
+  BUZZ_OPEN: ["ANSWER_OPEN", "LOCKED", "CLOSED"],
+  ANSWER_OPEN: ["LOCKED", "REVIEW", "PUBLISHED", "CLOSED"],
+  LOCKED: ["REVIEW", "PUBLISHED", "CLOSED"],
+  REVIEW: ["PUBLISHED", "CLOSED"],
+  PUBLISHED: ["CLOSED"],
+  CLOSED: []
+};
 
 async function authorizedGet<T>(path: string, token: string): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -75,11 +87,10 @@ export function TeacherDashboardPage() {
   const stored = readSession();
   const teacherToken = stored?.token ?? null;
   const [classroomCode, setClassroomCode] = useState(stored?.classroomCode ?? "");
+  const [resumeClassroomCode, setResumeClassroomCode] = useState(stored?.classroomCode ?? "");
   const [classroomName, setClassroomName] = useState("課堂 A");
   const [leaderboardVisibility, setLeaderboardVisibility] = useState<LeaderboardVisibility>("TOP_10");
-  const [questionPrompt, setQuestionPrompt] = useState("法國的首都是哪裡？");
-  const [questionAnswer, setQuestionAnswer] = useState("巴黎");
-  const [questionType, setQuestionType] = useState("BUZZ");
+  const [questionPrompt, setQuestionPrompt] = useState("");
   const [sheetConfigs, setSheetConfigs] = useState<Array<{ id: string; name: string; sheetId: string }>>([]);
   const [sheetConfigName, setSheetConfigName] = useState("");
   const [sheetIdInput, setSheetIdInput] = useState("");
@@ -93,7 +104,7 @@ export function TeacherDashboardPage() {
   const [leaderboard, setLeaderboard] = useState<Array<Record<string, unknown>>>([]);
   const [members, setMembers] = useState<Array<Record<string, unknown>>>([]);
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
-  const [notice, setNotice] = useState("請先建立課堂，然後開始配置題目與同步流程。");
+  const [notice, setNotice] = useState("請先建立課堂，或輸入課堂代碼重返既有課堂。");
   const realtime = useRealtimeFeed(teacherToken, classroomCode || null);
 
   const lastRealtimeEvent = useMemo(
@@ -137,12 +148,28 @@ export function TeacherDashboardPage() {
     }
     const result = await createClassroom(teacherToken, classroomName, leaderboardVisibility, defaultSettings);
     setClassroomCode(result.classroom.code);
+    setResumeClassroomCode(result.classroom.code);
     writeSession({
       ...stored,
       classroomCode: result.classroom.code,
       classroomId: result.classroom.id
     });
     setNotice(`課堂 ${result.classroom.code} 已建立。`);
+  }
+
+  async function handleResumeClassroom() {
+    if (!teacherToken || !stored || !resumeClassroomCode.trim()) {
+      return;
+    }
+    const joined = await joinClassroom(teacherToken, resumeClassroomCode.trim().toUpperCase());
+    setClassroomCode(joined.classroom.code);
+    setResumeClassroomCode(joined.classroom.code);
+    writeSession({
+      ...stored,
+      classroomCode: joined.classroom.code,
+      classroomId: joined.classroom.id
+    });
+    setNotice(`已重返課堂 ${joined.classroom.code}。`);
   }
 
   async function handleCreateSheetConfig() {
@@ -179,19 +206,25 @@ export function TeacherDashboardPage() {
     });
     const result = await createQuestion(teacherToken, classroomCode, {
       prompt: questionPrompt,
-      type: questionType,
+      type: "BUZZ",
       score: 10,
-      answerKey: questionAnswer,
       publicationSettings,
       answerTimeLimitSeconds: 30
     });
     setQuestions((current) => [...current, result.question]);
     setSelectedQuestionId(String(result.question.id));
+    setQuestionPrompt("");
     setNotice("題目已建立。");
   }
 
   async function handleStateChange(questionId: string, targetState: string) {
     if (!teacherToken || !classroomCode) {
+      return;
+    }
+    const question = questions.find((item) => String(item.id) === questionId);
+    const currentState = String(question?.state ?? "");
+    if (!allowedQuestionTransitions[currentState]?.includes(targetState)) {
+      setNotice(`題目無法從「${formatQuestionState(currentState)}」直接切換到「${formatQuestionState(targetState)}」。`);
       return;
     }
     await updateQuestionState(teacherToken, classroomCode, questionId, targetState);
@@ -208,6 +241,22 @@ export function TeacherDashboardPage() {
     const result = await listQuestions(teacherToken, classroomCode);
     setQuestions(result.questions);
     setNotice(questionId ? "該題已重置為未開放狀態。" : "所有題目已重置為未開放狀態。");
+  }
+
+  async function handleCompleteAndReview(questionId: string) {
+    if (!teacherToken || !classroomCode) return;
+    const question = questions.find((item) => String(item.id) === questionId);
+    const currentState = String(question?.state ?? "");
+    if (currentState === "BUZZ_OPEN" || currentState === "ANSWER_OPEN") {
+      await updateQuestionState(teacherToken, classroomCode, questionId, "LOCKED");
+      const result = await listQuestions(teacherToken, classroomCode);
+      setQuestions(result.questions);
+    } else if (currentState !== "LOCKED") {
+      setNotice("請先開放搶答，待學生提交答案後再完成搶答。");
+      return;
+    }
+    setSelectedQuestionId(questionId);
+    setNotice("搶答已完成，請在下方檢討並修改學生答案。");
   }
 
   async function handleUpdateAnswer() {
@@ -230,12 +279,30 @@ export function TeacherDashboardPage() {
     setNotice("學生答案已更新，且已重新同步到 Google Sheets。");
   }
 
+  async function handleDeleteAnswer(submissionId: string) {
+    if (!teacherToken) return;
+    await authorizedPost("/api/submissions/delete", teacherToken, { submissionId });
+    setSubmissions((current) => current.filter((submission) => submission.submissionId !== submissionId));
+    setNotice("學生答案已刪除。");
+  }
+
+  async function handleDeleteQuestion(questionId: string) {
+    if (!teacherToken || !classroomCode) return;
+    await authorizedPost("/api/questions/delete", teacherToken, { classroomCode, questionId });
+    setQuestions((current) => current.filter((question) => String(question.id) !== questionId));
+    if (selectedQuestionId === questionId) {
+      setSelectedQuestionId("");
+      setSubmissions([]);
+    }
+    setNotice("題目已刪除。");
+  }
+
   return (
     <section className="grid-layout">
       <div className="panel hero-panel">
         <h2>管理主控台面板</h2>
         <p className="muted">
-          目前登入管理者：{stored?.displayName ?? "教師"}。可建立課堂、配置 Sheet、綁定題目與維護學生答案。
+          目前登入管理者：{stored?.displayName ?? "教師"}。可建立課堂、輸入課堂代碼重返既有課堂、配置 Sheet、綁定題目與維護學生答案。
         </p>
         <div className="inline-form">
           <input value={classroomName} onChange={(event) => setClassroomName(event.target.value)} placeholder="課堂名稱" />
@@ -246,6 +313,14 @@ export function TeacherDashboardPage() {
             <option value="FULL">{formatLeaderboardVisibility("FULL")}</option>
           </select>
           <button disabled={!teacherToken} onClick={() => void handleCreateClassroom()}>建立課堂</button>
+        </div>
+        <div className="inline-form">
+          <input
+            value={resumeClassroomCode}
+            onChange={(event) => setResumeClassroomCode(event.target.value.toUpperCase())}
+            placeholder="輸入課堂代碼以重返既有課堂"
+          />
+          <button disabled={!teacherToken} onClick={() => void handleResumeClassroom()}>重返課堂</button>
           <button type="button" className="secondary-button" disabled={!teacherToken || !classroomCode} onClick={() => void handleReset()}>
             全域重置狀態
           </button>
@@ -286,14 +361,7 @@ export function TeacherDashboardPage() {
         <div className="stack-form">
           <input value={questionPrompt} onChange={(event) => setQuestionPrompt(event.target.value)} placeholder="題目內容" />
           <div className="inline-form">
-            <select value={questionType} onChange={(event) => setQuestionType(event.target.value)}>
-              <option value="BUZZ">{formatQuestionType("BUZZ")}</option>
-              <option value="SHORT_ANSWER">{formatQuestionType("SHORT_ANSWER")}</option>
-              <option value="SINGLE_CHOICE">{formatQuestionType("SINGLE_CHOICE")}</option>
-              <option value="MULTIPLE_CHOICE">{formatQuestionType("MULTIPLE_CHOICE")}</option>
-              <option value="TRUE_FALSE">{formatQuestionType("TRUE_FALSE")}</option>
-            </select>
-            <input value={questionAnswer} onChange={(event) => setQuestionAnswer(event.target.value)} placeholder="答案 / 預設內容" />
+            <span>{formatQuestionType("BUZZ")}</span>
             <select value={selectedSheetConfigId} onChange={(event) => setSelectedSheetConfigId(event.target.value)}>
               <option value="">選擇表單配置</option>
               {sheetConfigs.map((config) => (
@@ -301,7 +369,7 @@ export function TeacherDashboardPage() {
               ))}
             </select>
             <input value={targetCell} onChange={(event) => setTargetCell(event.target.value.toUpperCase())} placeholder="目標儲存格，例如 A1" />
-            <button disabled={!teacherToken || !classroomCode} onClick={() => void handleCreateQuestion()}>建立新題目</button>
+            <button disabled={!teacherToken || !classroomCode || !questionPrompt.trim()} onClick={() => void handleCreateQuestion()}>建立新題目</button>
           </div>
         </div>
         <div className="card-list">
@@ -314,10 +382,12 @@ export function TeacherDashboardPage() {
               <div className="action-row">
                 <button onClick={() => void handleStateChange(String(question.id), "READY")}>設為未開放</button>
                 <button onClick={() => void handleStateChange(String(question.id), "BUZZ_OPEN")}>開放搶答</button>
-                <button onClick={() => void handleStateChange(String(question.id), "ANSWER_OPEN")}>開放作答</button>
-                <button onClick={() => void handleStateChange(String(question.id), "PUBLISHED")}>公布結果</button>
+                {String(question.type) !== "BUZZ" ? (
+                  <button onClick={() => void handleStateChange(String(question.id), "ANSWER_OPEN")}>開放作答</button>
+                ) : null}
+                <button onClick={() => void handleCompleteAndReview(String(question.id))}>完成搶答並檢討</button>
                 <button type="button" className="secondary-button" onClick={() => void handleReset(String(question.id))}>重置本題</button>
-                <button type="button" className="secondary-button" onClick={() => setSelectedQuestionId(String(question.id))}>查看答案</button>
+                <button type="button" className="secondary-button" onClick={() => void handleDeleteQuestion(String(question.id))}>刪除題目</button>
               </div>
             </article>
           ))}
@@ -325,8 +395,8 @@ export function TeacherDashboardPage() {
       </div>
 
       <div className="panel">
-        <h3>學生答案維護</h3>
-        <p className="muted">{selectedQuestionId ? `目前題目 ID：${selectedQuestionId}` : "請先在上方選擇一題查看答案。"}</p>
+        <h3>搶答檢討與學生答案修改</h3>
+        <p className="muted">{selectedQuestionId ? `目前題目 ID：${selectedQuestionId}` : "學生送出答案後，請按「完成搶答並檢討」。"}</p>
         <div className="card-list">
           {submissions.map((submission) => (
             <article key={submission.submissionId} className="mini-card">
@@ -347,6 +417,9 @@ export function TeacherDashboardPage() {
                   <span>{submission.answer}</span>
                   <button type="button" className="secondary-button" onClick={() => { setEditingSubmissionId(submission.submissionId); setEditingAnswer(submission.answer); }}>
                     修改答案
+                  </button>
+                  <button type="button" className="secondary-button" onClick={() => void handleDeleteAnswer(submission.submissionId)}>
+                    刪除答案
                   </button>
                 </div>
               )}

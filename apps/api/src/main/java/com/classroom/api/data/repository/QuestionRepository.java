@@ -185,6 +185,18 @@ public final class QuestionRepository {
     }
   }
 
+  public void delete(UUID classroomId, UUID questionId) {
+    String sql = "DELETE FROM questions WHERE classroom_id = ? AND id = ?";
+    try (Connection connection = database.openConnection();
+         PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setObject(1, classroomId);
+      statement.setObject(2, questionId);
+      statement.executeUpdate();
+    } catch (SQLException exception) {
+      throw new DatabaseException("Unable to delete question", exception);
+    }
+  }
+
   private static QuestionEntity mapQuestion(ResultSet resultSet) throws SQLException {
     return new QuestionEntity(
         resultSet.getObject("id", UUID.class),

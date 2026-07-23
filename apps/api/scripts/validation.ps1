@@ -137,7 +137,9 @@ try {
 
   $leaderboard = Invoke-ApiJson -Method "GET" -Path "/api/leaderboard?classroomCode=$classroomCode" -Token $teacherToken -Body $null
   Assert-True ($leaderboard.StatusCode -eq 200) "Leaderboard request failed"
-  Assert-True (@($leaderboard.Body.leaderboard).Count -ge 2) "Leaderboard did not return enough entries"
+  $leaderboardEntries = @($leaderboard.Body.leaderboard)
+  $leaderboardJson = $leaderboardEntries | ConvertTo-Json -Compress
+  Assert-True ($leaderboardEntries.Count -ge 2) "Leaderboard did not return enough entries: $leaderboardJson"
 
   $exportResponse = Invoke-ApiJson -Method "GET" -Path "/api/reports/export?classroomCode=$classroomCode&type=scores" -Token $teacherToken -Body $null
   Assert-True ($exportResponse.StatusCode -eq 200) "Export request failed"

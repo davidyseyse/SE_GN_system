@@ -9,6 +9,8 @@ type RealtimeEventView = {
   occurredAt: string;
   payload?: {
     userId?: string;
+    externalUserId?: string;
+    displayName?: string;
     questionId?: string;
     successful?: boolean;
   };
@@ -18,6 +20,8 @@ export function StudentPlayPage() {
   const session = readSession();
   const [questions, setQuestions] = useState<Array<Record<string, unknown>>>([]);
   const [answer, setAnswer] = useState("");
+  const [locallyWonQuestionId, setLocallyWonQuestionId] = useState("");
+  const [submittedQuestionIds, setSubmittedQuestionIds] = useState<string[]>([]);
   const [leaderboard, setLeaderboard] = useState<Array<Record<string, unknown>>>([]);
   const [notice, setNotice] = useState("請等待教師開放搶答。");
   const realtime = useRealtimeFeed(session?.token ?? null, session?.classroomCode ?? null);
@@ -38,7 +42,7 @@ export function StudentPlayPage() {
         continue;
       }
       if (event.type === "BUZZ_RESULT" && event.payload?.successful) {
-        winner = String(event.payload.userId ?? "");
+        winner = String(event.payload.externalUserId ?? event.payload.userId ?? "");
       }
       if (event.type === "BUZZ_CANCELLED" || event.type === "BUZZ_RESET") {
         winner = "";
@@ -73,18 +77,27 @@ export function StudentPlayPage() {
   const currentUserId = session.userId;
   const state = activeQuestion ? String(activeQuestion.state) : "READY";
   const isBuzzOpen = state === "BUZZ_OPEN";
-  const isWinner = buzzWinnerUserId !== "" && buzzWinnerUserId === currentUserId;
+  const isWinner = (activeQuestion !== null && locallyWonQuestionId === String(activeQuestion.id))
+    || (buzzWinnerUserId !== "" && buzzWinnerUserId === currentUserId);
   const isLoser = buzzWinnerUserId !== "" && buzzWinnerUserId !== currentUserId;
   const canBuzz = isBuzzOpen && buzzWinnerUserId === "";
   const canAnswer = isWinner || state === "ANSWER_OPEN";
+  const hasSubmitted = activeQuestion !== null && submittedQuestionIds.includes(String(activeQuestion.id));
 
   async function handleSubmitAnswer() {
     if (!activeQuestion) {
       return;
     }
-    const result = await submitAnswer(activeSession.token, activeSession.classroomCode!, String(activeQuestion.id), answer);
-    setNotice(`作答已送出。批改狀態：${result.reviewStatus || "已評分"}`);
-    setAnswer("");
+    const questionId = String(activeQuestion.id);
+    if (submittedQuestionIds.includes(questionId)) return;
+    try {
+      const result = await submitAnswer(activeSession.token, activeSession.classroomCode!, questionId, answer);
+      setSubmittedQuestionIds((current) => [...current, questionId]);
+      setNotice(`作答已送出。批改狀態：${result.reviewStatus || "待教師確認"}`);
+      setAnswer("");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "答案送出失敗。");
+    }
   }
 
   async function handleBuzz() {
@@ -92,6 +105,9 @@ export function StudentPlayPage() {
       return;
     }
     const result = await submitBuzz(activeSession.token, activeSession.classroomCode!, String(activeQuestion.id));
+    if (result.accepted) {
+      setLocallyWonQuestionId(String(activeQuestion.id));
+    }
     setNotice(result.accepted ? "你搶答成功，請輸入答案。" : "你未搶到答題權。");
   }
 
@@ -130,9 +146,9 @@ export function StudentPlayPage() {
                 </button>
                 {isWinner ? (
                   <>
-                    <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="請輸入答案" />
+                    <textarea disabled={hasSubmitted} value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="請輸入答案" />
                     <div className="action-row">
-                      <button onClick={() => void handleSubmitAnswer()}>提交答案</button>
+                      <button disabled={hasSubmitted} onClick={() => void handleSubmitAnswer()}>{hasSubmitted ? "答案已提交" : "提交答案"}</button>
                       <button type="button" className="secondary-button" onClick={() => void handleCancelLock()}>取消鎖定</button>
                     </div>
                   </>
@@ -140,8 +156,8 @@ export function StudentPlayPage() {
               </>
             ) : canAnswer ? (
               <>
-                <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="請輸入答案" />
-                <button onClick={() => void handleSubmitAnswer()}>提交答案</button>
+                <textarea disabled={hasSubmitted} value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="請輸入答案" />
+                <button disabled={hasSubmitted} onClick={() => void handleSubmitAnswer()}>{hasSubmitted ? "答案已提交" : "提交答案"}</button>
               </>
             ) : (
               <button className="buzz-button buzz-button-locked" disabled>未開放</button>

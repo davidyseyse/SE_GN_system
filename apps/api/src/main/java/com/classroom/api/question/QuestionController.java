@@ -137,6 +137,21 @@ public final class QuestionController {
     };
   }
 
+  public HttpHandlerFunction deleteQuestionHandler() {
+    return exchange -> {
+      authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
+      Map<String, String> request = parseBody(exchange);
+      ClassroomEntity classroom = requireClassroom(requiredValue(request, "classroomCode"));
+      UUID questionId = UUID.fromString(requiredValue(request, "questionId"));
+      requireQuestion(classroom.id(), questionId);
+      questionRepository.delete(classroom.id(), questionId);
+      eventBroker.publish(classroom.classroomCode(), "QUESTION_DELETED", Map.of(
+          "questionId", questionId.toString()
+      ));
+      HttpResponses.json(exchange, 200, Map.of("deleted", questionId.toString()));
+    };
+  }
+
   public HttpHandlerFunction reorderQuestionsHandler() {
     return exchange -> {
       authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);

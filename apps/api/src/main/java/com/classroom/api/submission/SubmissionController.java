@@ -11,6 +11,8 @@ import com.classroom.api.data.model.ScoreRecordEntity;
 import com.classroom.api.data.model.SheetConfigEntity;
 import com.classroom.api.data.model.SubmissionEntity;
 import com.classroom.api.data.model.UserEntity;
+import com.classroom.api.data.model.BuzzRecordEntity;
+import com.classroom.api.data.repository.BuzzRepository;
 import com.classroom.api.data.repository.ClassroomRepository;
 import com.classroom.api.data.repository.QuestionRepository;
 import com.classroom.api.data.repository.ScoreRepository;
@@ -24,6 +26,7 @@ import com.classroom.api.score.ClassroomScoringPolicy;
 import com.classroom.api.sheets.GoogleSheetsSyncService;
 import com.classroom.api.util.JsonMapParser;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.Map;
 import java.util.UUID;
 
@@ -35,6 +38,7 @@ public final class SubmissionController {
   private final ScoreRepository scoreRepository;
   private final SheetConfigRepository sheetConfigRepository;
   private final UserRepository userRepository;
+  private final BuzzRepository buzzRepository;
   private final RealtimeEventBroker eventBroker;
   private final GoogleSheetsSyncService googleSheetsSyncService;
 
@@ -46,6 +50,7 @@ public final class SubmissionController {
       ScoreRepository scoreRepository,
       SheetConfigRepository sheetConfigRepository,
       UserRepository userRepository,
+      BuzzRepository buzzRepository,
       RealtimeEventBroker eventBroker,
       GoogleSheetsSyncService googleSheetsSyncService
   ) {
@@ -56,6 +61,7 @@ public final class SubmissionController {
     this.scoreRepository = scoreRepository;
     this.sheetConfigRepository = sheetConfigRepository;
     this.userRepository = userRepository;
+    this.buzzRepository = buzzRepository;
     this.eventBroker = eventBroker;
     this.googleSheetsSyncService = googleSheetsSyncService;
   }
@@ -66,11 +72,13 @@ public final class SubmissionController {
       Map<String, String> request = JsonMapParser.parseObject(exchange.readRequestBody());
       ClassroomEntity classroom = requireClassroom(request.get("classroomCode"));
       QuestionEntity question = requireQuestion(classroom.id(), request.get("questionId"));
-      if (QuestionState.valueOf(question.state()) != QuestionState.ANSWER_OPEN) {
+      QuestionState state = QuestionState.valueOf(question.state());
+      if (state != QuestionState.ANSWER_OPEN && state != QuestionState.BUZZ_OPEN) {
         throw new IllegalArgumentException("Question is not accepting answers");
       }
 
       UserEntity user = requireUser(authContext.subject());
+      assertUserCanSubmit(question, user, state);
       if (submissionRepository.hasSubmission(question.id(), user.id())) {
         throw new IllegalArgumentException("Duplicate submission is not allowed");
       }
@@ -221,16 +229,45 @@ public final class SubmissionController {
     };
   }
 
+  public HttpHandlerFunction deleteAnswerHandler() {
+    return exchange -> {
+      authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
+      Map<String, String> request = JsonMapParser.parseObject(exchange.readRequestBody());
+      UUID submissionId = UUID.fromString(request.getOrDefault("submissionId", ""));
+      SubmissionEntity submission = submissionRepository.findById(submissionId);
+      if (submission == null) {
+        throw new IllegalArgumentException("Submission not found");
+      }
+
+      submissionRepository.delete(submissionId);
+      if (submission.awardedScore() != null && submission.awardedScore() != 0) {
+        int reversedScore = -submission.awardedScore();
+        int runningTotal = scoreRepository.currentTotal(submission.classroomId(), submission.userId()) + reversedScore;
+        scoreRepository.save(new ScoreRecordEntity(
+            UUID.randomUUID(), submission.classroomId(), submission.userId(), submission.questionId(),
+            "ANSWER_DELETED", reversedScore, runningTotal, Instant.now()
+        ));
+      }
+
+      ClassroomEntity classroom = classroomRepository.findById(submission.classroomId());
+      eventBroker.publish(classroom.classroomCode(), "QUESTION_STATISTICS_UPDATED", Map.of(
+          "questionId", submission.questionId().toString(),
+          "submissionCount", submissionRepository.listByQuestionId(submission.questionId()).size()
+      ));
+      HttpResponses.json(exchange, 200, Map.of("deleted", submissionId.toString()));
+    };
+  }
+
   private SubmissionDecision decide(ClassroomEntity classroom, QuestionEntity question, String answer) {
     QuestionType type = QuestionType.valueOf(question.type());
     return switch (type) {
-      case SINGLE_CHOICE, MULTIPLE_CHOICE, TRUE_FALSE, BUZZ -> {
+      case SINGLE_CHOICE, MULTIPLE_CHOICE, TRUE_FALSE -> {
         boolean correct = question.answerKey().trim().equals(answer.trim());
         ClassroomScoringPolicy scoringPolicy = ClassroomScoringPolicy.fromSettings(classroom.participationSettings());
         int delta = correct ? question.score() : -Math.max(0, scoringPolicy.wrongAnswerPenalty());
         yield new SubmissionDecision(correct, delta, null);
       }
-      case SHORT_ANSWER -> new SubmissionDecision(null, null, "PENDING_REVIEW");
+      case SHORT_ANSWER, BUZZ -> new SubmissionDecision(null, null, "PENDING_REVIEW");
     };
   }
 
@@ -264,6 +301,20 @@ public final class SubmissionController {
     return user;
   }
 
+  private void assertUserCanSubmit(QuestionEntity question, UserEntity user, QuestionState state) {
+    if (state != QuestionState.BUZZ_OPEN || QuestionType.valueOf(question.type()) != QuestionType.BUZZ) {
+      return;
+    }
+
+    BuzzRecordEntity winner = buzzRepository.findByQuestionId(question.id()).stream()
+        .filter(BuzzRecordEntity::successful)
+        .max(Comparator.comparingLong(BuzzRecordEntity::receiptOrder))
+        .orElseThrow(() -> new IllegalArgumentException("No buzz winner yet"));
+    if (!winner.userId().equals(user.id())) {
+      throw new SecurityException("Only the buzz winner can submit an answer right now");
+    }
+  }
+
   private void syncSubmissionToSheet(QuestionEntity question, UserEntity user, SubmissionEntity submission) {
     Map<String, String> settings = JsonMapParser.parseObject(question.publicationSettings());
     String sheetConfigId = settings.getOrDefault("sheetConfigId", "").replace("\"", "").trim();
@@ -277,7 +328,7 @@ public final class SubmissionController {
       return;
     }
 
-    String answerValue = submission.submittedAnswer().replace("\"", "");
+    String answerValue = submission.submittedAnswer();
     String syncValue = user.displayName() + "：" + answerValue;
     googleSheetsSyncService.updateCell(config.sheetId(), targetCell, syncValue);
   }

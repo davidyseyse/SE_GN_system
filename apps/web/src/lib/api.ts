@@ -144,7 +144,7 @@ export async function getMembers(token: string, classroomCode: string) {
 export async function createQuestion(
   token: string,
   classroomCode: string,
-  payload: { prompt: string; type: string; score: number; answerKey: string; publicationSettings: string; answerTimeLimitSeconds?: number }
+  payload: { prompt: string; type: string; score: number; publicationSettings: string; answerTimeLimitSeconds?: number }
 ) {
   return request<{ question: QuestionView }>("/api/questions", {
     method: "POST",

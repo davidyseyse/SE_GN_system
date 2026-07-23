@@ -151,6 +151,17 @@ public final class SubmissionRepository {
     }
   }
 
+  public void delete(UUID submissionId) {
+    String sql = "DELETE FROM submissions WHERE id = ?";
+    try (Connection connection = database.openConnection();
+         PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setObject(1, submissionId);
+      statement.executeUpdate();
+    } catch (SQLException exception) {
+      throw new DatabaseException("Unable to delete submission", exception);
+    }
+  }
+
   private static SubmissionEntity mapSubmission(ResultSet resultSet) throws SQLException {
     return new SubmissionEntity(
         resultSet.getObject("id", UUID.class),

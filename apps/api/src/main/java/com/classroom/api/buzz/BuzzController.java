@@ -105,6 +105,8 @@ public final class BuzzController {
       eventBroker.publish(classroom.classroomCode(), winner ? "BUZZ_RESULT" : "BUZZ_ATTEMPT_RECORDED", Map.of(
           "questionId", question.id().toString(),
           "userId", user.id().toString(),
+          "externalUserId", user.externalId(),
+          "displayName", user.displayName(),
           "requestId", requestId,
           "receiptOrder", sequence,
           "successful", winner
@@ -160,7 +162,9 @@ public final class BuzzController {
       redisBuzzLockService.delete("buzz:winner:" + question.id());
       eventBroker.publish(classroom.classroomCode(), "BUZZ_CANCELLED", Map.of(
           "questionId", question.id().toString(),
-          "userId", user.id().toString()
+          "userId", user.id().toString(),
+          "externalUserId", user.externalId(),
+          "displayName", user.displayName()
       ));
 
       HttpResponses.json(exchange, 200, Map.of(
