@@ -1,7 +1,6 @@
 import type {
   ClassroomParticipantContract,
   ClassroomQuestionContract,
-  LeaderboardVisibility,
   Role
 } from "@classroom/shared";
 
@@ -30,10 +29,44 @@ export type StudentLoginResponse = TokenResponse & {
 };
 
 export type QuestionView = ClassroomQuestionContract & {
+  packageId?: string;
+  title?: string;
+  items?: QuestionItemView[];
   answerKey: string;
   publicationSettings: string;
   answerTimeLimitSeconds: string;
   archivedAt: string;
+  roundId: string;
+  buzzStatus?: "NOT_OPEN" | "WAITING_FOR_BUZZ" | "WINNER_ANSWERING" | "SUBMITTED_PENDING_REVIEW" | "STOPPED";
+  winnerUserId?: string;
+  winnerExternalUserId?: string;
+  winnerDisplayName?: string;
+  submissionStatus?: string;
+  reviewStatus?: string;
+};
+
+export type QuestionItemView = {
+  id: string;
+  ordinal: number;
+  prompt: string;
+  targetCell: string;
+};
+
+export type CreateQuestionPackagePayload = {
+  title: string;
+  sheetConfigId: string;
+  items: Array<{ prompt: string; targetCell: string }>;
+  score?: number;
+  answerTimeLimitSeconds?: number;
+};
+
+export type QuestionBatchResult = {
+  questionId: string;
+  previousState: string;
+  resultingState: string;
+  result: "CHANGED" | "UNCHANGED" | "SKIPPED" | "FAILED";
+  roundId: string;
+  reason: string;
 };
 
 export type SheetConfigView = {
@@ -41,6 +74,16 @@ export type SheetConfigView = {
   name: string;
   sheetId: string;
   createdAt: string;
+};
+
+export type SubmittedAnswerView = {
+  submissionId: string;
+  questionId: string;
+  userId: string;
+  isOwnSubmission: boolean;
+  displayName: string;
+  answer: string;
+  reviewStatus: string;
 };
 
 async function request<T>(path: string, init?: RequestInit, token?: string): Promise<T> {
@@ -79,7 +122,6 @@ export async function studentLogin(studentId: string, groupNumber: number): Prom
 export async function createClassroom(
   token: string,
   name: string,
-  leaderboardVisibility: LeaderboardVisibility,
   settings: string
 ) {
   return request<{
@@ -88,13 +130,11 @@ export async function createClassroom(
       code: string;
       name: string;
       status: string;
-      leaderboardVisibility: string;
     };
   }>("/api/classrooms", {
     method: "POST",
     body: JSON.stringify({
       name,
-      leaderboardVisibility,
       participationSettings: settings
     })
   }, token);
@@ -155,11 +195,61 @@ export async function createQuestion(
   }, token);
 }
 
+export async function createQuestionPackage(
+  token: string,
+  classroomCode: string,
+  payload: CreateQuestionPackagePayload
+) {
+  return request<{ package: QuestionView }>("/api/question-packages", {
+    method: "POST",
+    body: JSON.stringify({ classroomCode, ...payload })
+  }, token);
+}
+
+export async function listQuestionPackages(token: string, classroomCode: string) {
+  return request<{ packages: QuestionView[] }>(
+    `/api/question-packages?classroomCode=${encodeURIComponent(classroomCode)}`,
+    undefined,
+    token
+  );
+}
+
+export async function submitPackageAnswers(
+  token: string,
+  classroomCode: string,
+  packageId: string,
+  answers: Array<{ itemId: string; answer: string }>
+) {
+  return request<{ submissionId: string; syncStatus: string }>(
+    "/api/question-packages/answers",
+    {
+      method: "POST",
+      body: JSON.stringify({ classroomCode, packageId, answers })
+    },
+    token
+  );
+}
+
 export async function updateQuestionState(token: string, classroomCode: string, questionId: string, targetState: string) {
   return request<{ question: QuestionView }>("/api/questions/state", {
     method: "POST",
     body: JSON.stringify({ classroomCode, questionId, targetState })
   }, token);
+}
+
+export async function batchQuestionAction(
+  token: string,
+  classroomCode: string,
+  action: "OPEN_ALL" | "STOP_ALL" | "RESET_ALL"
+) {
+  return request<{ classroomCode: string; action: string; results: QuestionBatchResult[] }>(
+    "/api/questions/batch",
+    {
+      method: "POST",
+      body: JSON.stringify({ classroomCode, action })
+    },
+    token
+  );
 }
 
 export async function listQuestions(token: string, classroomCode: string) {
@@ -170,9 +260,9 @@ export async function listQuestions(token: string, classroomCode: string) {
   );
 }
 
-export async function getLeaderboard(token: string, classroomCode: string) {
-  return request<{ leaderboard: Array<{ rank: number; userId: string; displayName: string; score: number }> }>(
-    `/api/leaderboard?classroomCode=${encodeURIComponent(classroomCode)}`,
+export async function getCurrentAnswers(token: string, classroomCode: string, questionId: string) {
+  return request<{ classroomCode: string; questionId: string; answers: SubmittedAnswerView[] }>(
+    `/api/submissions?classroomCode=${encodeURIComponent(classroomCode)}&questionId=${encodeURIComponent(questionId)}`,
     undefined,
     token
   );

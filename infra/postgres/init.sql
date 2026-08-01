@@ -17,13 +17,11 @@ CREATE TABLE IF NOT EXISTS classrooms (
   name VARCHAR(200) NOT NULL,
   status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
   participation_settings JSONB NOT NULL DEFAULT '{}'::jsonb,
-  leaderboard_visibility VARCHAR(20) NOT NULL DEFAULT 'HIDDEN',
   active_question_id UUID NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   opened_at TIMESTAMPTZ NULL,
-  closed_at TIMESTAMPTZ NULL,
-  CHECK (leaderboard_visibility IN ('HIDDEN', 'TOP_3', 'TOP_10', 'FULL'))
+  closed_at TIMESTAMPTZ NULL
 );
 
 CREATE TABLE IF NOT EXISTS sheet_configs (
@@ -51,7 +49,7 @@ CREATE TABLE IF NOT EXISTS questions (
   classroom_id UUID NOT NULL REFERENCES classrooms(id) ON DELETE CASCADE,
   ordinal INTEGER NOT NULL,
   type VARCHAR(32) NOT NULL,
-  state VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+  state VARCHAR(20) NOT NULL DEFAULT 'READY',
   prompt TEXT NOT NULL,
   answer_key JSONB NOT NULL DEFAULT '{}'::jsonb,
   publication_settings JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -99,6 +97,8 @@ CREATE TABLE IF NOT EXISTS buzz_records (
   received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   outcome_status VARCHAR(20) NOT NULL,
   successful BOOLEAN NOT NULL DEFAULT FALSE,
+  round_number INTEGER NOT NULL DEFAULT 0,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
   UNIQUE (question_id, request_id)
 );
 
@@ -115,8 +115,35 @@ CREATE TABLE IF NOT EXISTS submissions (
   review_status VARCHAR(20) NULL,
   submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   reviewed_at TIMESTAMPTZ NULL,
+  round_number INTEGER NOT NULL DEFAULT 0,
   UNIQUE (question_id, user_id, attempt_number)
 );
+
+CREATE TABLE IF NOT EXISTS question_buzz_rounds (
+  question_id UUID PRIMARY KEY REFERENCES questions(id) ON DELETE CASCADE,
+  current_round INTEGER NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE buzz_records ADD COLUMN IF NOT EXISTS round_number INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE buzz_records ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE submissions ADD COLUMN IF NOT EXISTS round_number INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE questions ALTER COLUMN state SET DEFAULT 'READY';
+
+DO $$
+DECLARE
+  migrated_draft_count INTEGER;
+BEGIN
+  UPDATE questions
+  SET state = 'READY', updated_at = NOW()
+  WHERE state = 'DRAFT';
+  GET DIAGNOSTICS migrated_draft_count = ROW_COUNT;
+  RAISE NOTICE 'Migrated % legacy DRAFT question(s) to READY', migrated_draft_count;
+END $$;
+
+ALTER TABLE submissions DROP CONSTRAINT IF EXISTS submissions_question_id_user_id_attempt_number_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_submissions_round_attempt
+  ON submissions (question_id, user_id, round_number, attempt_number);
 
 CREATE TABLE IF NOT EXISTS score_records (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -128,16 +155,6 @@ CREATE TABLE IF NOT EXISTS score_records (
   running_total INTEGER NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (classroom_id, user_id, question_id, source_type, created_at)
-);
-
-CREATE TABLE IF NOT EXISTS leaderboard_snapshots (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  classroom_id UUID NOT NULL REFERENCES classrooms(id) ON DELETE CASCADE,
-  snapshot_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  ranking_data JSONB NOT NULL,
-  visibility VARCHAR(20) NOT NULL,
-  UNIQUE (classroom_id, snapshot_at),
-  CHECK (visibility IN ('HIDDEN', 'TOP_3', 'TOP_10', 'FULL'))
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -160,9 +177,10 @@ CREATE INDEX IF NOT EXISTS idx_questions_state
 CREATE INDEX IF NOT EXISTS idx_buzz_records_question_order
   ON buzz_records (question_id, receipt_order, received_at);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_buzz_records_single_winner
-  ON buzz_records (question_id)
-  WHERE successful = TRUE;
+DROP INDEX IF EXISTS idx_buzz_records_single_winner;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_buzz_records_single_active_winner
+  ON buzz_records (question_id, round_number)
+  WHERE successful = TRUE AND active = TRUE;
 
 CREATE INDEX IF NOT EXISTS idx_submissions_lookup
   ON submissions (question_id, user_id, submitted_at DESC);
@@ -170,8 +188,87 @@ CREATE INDEX IF NOT EXISTS idx_submissions_lookup
 CREATE INDEX IF NOT EXISTS idx_score_records_lookup
   ON score_records (classroom_id, user_id, created_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_leaderboard_snapshots_latest
-  ON leaderboard_snapshots (classroom_id, snapshot_at DESC);
-
 CREATE INDEX IF NOT EXISTS idx_audit_logs_classroom_created_at
   ON audit_logs (classroom_id, created_at DESC);
+
+-- Leaderboard display has been retired; these migrations are safe to repeat.
+DROP TABLE IF EXISTS leaderboard_snapshots;
+ALTER TABLE classrooms DROP COLUMN IF EXISTS leaderboard_visibility;
+
+-- Question packages retain questions.id as the lifecycle and buzz aggregate.
+ALTER TABLE questions
+  ADD COLUMN IF NOT EXISTS sheet_config_id UUID NULL REFERENCES sheet_configs(id);
+
+CREATE TABLE IF NOT EXISTS question_items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  question_id UUID NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL,
+  prompt TEXT NOT NULL,
+  target_cell TEXT NULL,
+  normalized_target_cell TEXT GENERATED ALWAYS AS (UPPER(BTRIM(target_cell))) STORED,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (question_id, ordinal),
+  UNIQUE (question_id, normalized_target_cell),
+  CHECK (ordinal > 0),
+  CHECK (BTRIM(prompt) <> '')
+);
+
+ALTER TABLE submissions
+  ADD COLUMN IF NOT EXISTS sheet_sync_status VARCHAR(20) NOT NULL DEFAULT 'NOT_REQUIRED',
+  ADD COLUMN IF NOT EXISTS sheet_sync_error TEXT NULL,
+  ADD COLUMN IF NOT EXISTS sheet_synced_at TIMESTAMPTZ NULL;
+
+DO $$
+DECLARE
+  backfilled_item_count INTEGER;
+  converted_submission_count INTEGER;
+  invalid_binding_count INTEGER;
+BEGIN
+  UPDATE questions q
+  SET sheet_config_id =
+    CASE
+      WHEN COALESCE(q.publication_settings->>'sheetConfigId', '') ~
+           '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+       AND EXISTS (
+         SELECT 1 FROM sheet_configs sc
+         WHERE sc.id = (q.publication_settings->>'sheetConfigId')::uuid
+       )
+      THEN (q.publication_settings->>'sheetConfigId')::uuid
+      ELSE q.sheet_config_id
+    END
+  WHERE q.sheet_config_id IS NULL;
+
+  INSERT INTO question_items (id, question_id, ordinal, prompt, target_cell)
+  SELECT gen_random_uuid(), q.id, 1, q.prompt,
+         NULLIF(BTRIM(q.publication_settings->>'targetCell'), '')
+  FROM questions q
+  WHERE NOT EXISTS (
+    SELECT 1 FROM question_items qi WHERE qi.question_id = q.id
+  );
+  GET DIAGNOSTICS backfilled_item_count = ROW_COUNT;
+
+  UPDATE submissions s
+  SET submitted_answer = jsonb_build_object(qi.id::text, s.submitted_answer)
+  FROM question_items qi
+  WHERE qi.question_id = s.question_id
+    AND qi.ordinal = 1
+    AND jsonb_typeof(s.submitted_answer) <> 'object';
+  GET DIAGNOSTICS converted_submission_count = ROW_COUNT;
+
+  SELECT COUNT(*) INTO invalid_binding_count
+  FROM questions q
+  JOIN question_items qi ON qi.question_id = q.id
+  WHERE q.sheet_config_id IS NULL OR qi.target_cell IS NULL;
+
+  RAISE NOTICE
+    'Question package migration: % item(s) backfilled, % submission(s) converted, % legacy package(s) need binding correction',
+    backfilled_item_count, converted_submission_count, invalid_binding_count;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_question_items_question_order
+  ON question_items (question_id, ordinal);
+
+CREATE INDEX IF NOT EXISTS idx_submissions_sheet_sync
+  ON submissions (sheet_sync_status)
+  WHERE sheet_sync_status = 'RETRYABLE';

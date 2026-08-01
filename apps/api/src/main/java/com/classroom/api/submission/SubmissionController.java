@@ -13,6 +13,7 @@ import com.classroom.api.data.model.SubmissionEntity;
 import com.classroom.api.data.model.UserEntity;
 import com.classroom.api.data.model.BuzzRecordEntity;
 import com.classroom.api.data.repository.BuzzRepository;
+import com.classroom.api.data.repository.BuzzRoundRepository;
 import com.classroom.api.data.repository.ClassroomRepository;
 import com.classroom.api.data.repository.QuestionRepository;
 import com.classroom.api.data.repository.ScoreRepository;
@@ -24,9 +25,11 @@ import com.classroom.api.http.HttpResponses;
 import com.classroom.api.realtime.RealtimeEventBroker;
 import com.classroom.api.score.ClassroomScoringPolicy;
 import com.classroom.api.sheets.GoogleSheetsSyncService;
+import com.classroom.api.sheets.SheetAnswerFormatter;
 import com.classroom.api.util.JsonMapParser;
 import java.time.Instant;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -41,6 +44,7 @@ public final class SubmissionController {
   private final BuzzRepository buzzRepository;
   private final RealtimeEventBroker eventBroker;
   private final GoogleSheetsSyncService googleSheetsSyncService;
+  private final BuzzRoundRepository buzzRoundRepository;
 
   public SubmissionController(
       AuthorizationGuard authorizationGuard,
@@ -52,7 +56,8 @@ public final class SubmissionController {
       UserRepository userRepository,
       BuzzRepository buzzRepository,
       RealtimeEventBroker eventBroker,
-      GoogleSheetsSyncService googleSheetsSyncService
+      GoogleSheetsSyncService googleSheetsSyncService,
+      BuzzRoundRepository buzzRoundRepository
   ) {
     this.authorizationGuard = authorizationGuard;
     this.classroomRepository = classroomRepository;
@@ -64,6 +69,7 @@ public final class SubmissionController {
     this.buzzRepository = buzzRepository;
     this.eventBroker = eventBroker;
     this.googleSheetsSyncService = googleSheetsSyncService;
+    this.buzzRoundRepository = buzzRoundRepository;
   }
 
   public HttpHandlerFunction submitHandler() {
@@ -78,8 +84,10 @@ public final class SubmissionController {
       }
 
       UserEntity user = requireUser(authContext.subject());
-      assertUserCanSubmit(question, user, state);
-      if (submissionRepository.hasSubmission(question.id(), user.id())) {
+      int roundNumber = QuestionType.valueOf(question.type()) == QuestionType.BUZZ
+          ? buzzRoundRepository.current(question.id()) : 0;
+      assertUserCanSubmit(question, user, state, roundNumber);
+      if (submissionRepository.hasSubmission(question.id(), user.id(), roundNumber)) {
         throw new IllegalArgumentException("Duplicate submission is not allowed");
       }
 
@@ -100,7 +108,7 @@ public final class SubmissionController {
           now,
           decision.reviewStatus() == null ? now : null
       );
-      submissionRepository.save(submission);
+      submissionRepository.save(submission, roundNumber);
       syncSubmissionToSheet(question, user, submission);
 
       if (decision.awardedScore() != null) {
@@ -117,9 +125,13 @@ public final class SubmissionController {
         ));
       }
 
-      eventBroker.publish(classroom.classroomCode(), "SUBMISSION_RECEIVED", Map.of(
+      eventBroker.publish(classroom.classroomCode(), "SUBMISSION_CREATED", Map.of(
+          "submissionId", submission.id().toString(),
           "questionId", question.id().toString(),
+          "roundId", Integer.toString(roundNumber),
           "userId", user.id().toString(),
+          "externalUserId", user.externalId(),
+          "displayName", user.displayName(),
           "status", submission.submissionStatus(),
           "reviewStatus", decision.reviewStatus() == null ? "" : decision.reviewStatus()
       ));
@@ -133,6 +145,42 @@ public final class SubmissionController {
           "isCorrect", decision.isCorrect() == null ? "" : decision.isCorrect().toString(),
           "awardedScore", decision.awardedScore() == null ? "" : decision.awardedScore().toString(),
           "reviewStatus", decision.reviewStatus() == null ? "" : decision.reviewStatus()
+      ));
+    };
+  }
+
+  public HttpHandlerFunction listCurrentHandler() {
+    return exchange -> {
+      AuthContext authContext = authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT, Role.STUDENT);
+      ClassroomEntity classroom = requireClassroom(exchange.queryParam("classroomCode"));
+      QuestionEntity question = requireQuestion(classroom.id(), exchange.queryParam("questionId"));
+      UserEntity requester = requireUser(authContext.subject());
+      if (!classroomRepository.hasMember(classroom.id(), requester.id())) {
+        throw new SecurityException("User is not a member of this classroom");
+      }
+
+      int roundNumber = QuestionType.valueOf(question.type()) == QuestionType.BUZZ
+          ? buzzRoundRepository.current(question.id()) : 0;
+      List<Map<String, Object>> answers = submissionRepository.listByQuestionAndRound(question.id(), roundNumber)
+          .stream()
+          .map(submission -> {
+            UserEntity user = userRepository.findById(submission.userId());
+            return Map.<String, Object>of(
+                "submissionId", submission.id().toString(),
+                "questionId", submission.questionId().toString(),
+                "userId", submission.userId().toString(),
+                "isOwnSubmission", submission.userId().equals(requester.id()),
+                "displayName", user == null ? submission.userId().toString() : user.displayName(),
+                "answer", submission.submittedAnswer(),
+                "reviewStatus", submission.reviewStatus() == null ? "" : submission.reviewStatus()
+            );
+          })
+          .toList();
+
+      HttpResponses.json(exchange, 200, Map.of(
+          "classroomCode", classroom.classroomCode(),
+          "questionId", question.id().toString(),
+          "answers", answers
       ));
     };
   }
@@ -177,10 +225,10 @@ public final class SubmissionController {
       ));
 
       ClassroomEntity classroom = classroomRepository.findById(reviewed.classroomId());
-      eventBroker.publish(classroom.classroomCode(), "LEADERBOARD_UPDATED", Map.of(
+      eventBroker.publish(classroom.classroomCode(), "SUBMISSION_REVIEWED", Map.of(
+          "submissionId", reviewed.id().toString(),
           "questionId", reviewed.questionId().toString(),
-          "userId", reviewed.userId().toString(),
-          "deltaScore", awardedScore
+          "userId", reviewed.userId().toString()
       ));
 
       HttpResponses.json(exchange, 200, Map.of(
@@ -221,6 +269,12 @@ public final class SubmissionController {
       QuestionEntity question = questionRepository.findById(submission.classroomId(), submission.questionId());
       UserEntity user = userRepository.findById(submission.userId());
       syncSubmissionToSheet(question, user, updated);
+      ClassroomEntity classroom = classroomRepository.findById(updated.classroomId());
+      eventBroker.publish(classroom.classroomCode(), "SUBMISSION_UPDATED", Map.of(
+          "submissionId", updated.id().toString(),
+          "questionId", updated.questionId().toString(),
+          "userId", updated.userId().toString()
+      ));
 
       HttpResponses.json(exchange, 200, Map.of(
           "submissionId", updated.id().toString(),
@@ -250,6 +304,11 @@ public final class SubmissionController {
       }
 
       ClassroomEntity classroom = classroomRepository.findById(submission.classroomId());
+      eventBroker.publish(classroom.classroomCode(), "SUBMISSION_DELETED", Map.of(
+          "submissionId", submission.id().toString(),
+          "questionId", submission.questionId().toString(),
+          "userId", submission.userId().toString()
+      ));
       eventBroker.publish(classroom.classroomCode(), "QUESTION_STATISTICS_UPDATED", Map.of(
           "questionId", submission.questionId().toString(),
           "submissionCount", submissionRepository.listByQuestionId(submission.questionId()).size()
@@ -301,15 +360,15 @@ public final class SubmissionController {
     return user;
   }
 
-  private void assertUserCanSubmit(QuestionEntity question, UserEntity user, QuestionState state) {
+  private void assertUserCanSubmit(QuestionEntity question, UserEntity user, QuestionState state, int roundNumber) {
     if (state != QuestionState.BUZZ_OPEN || QuestionType.valueOf(question.type()) != QuestionType.BUZZ) {
       return;
     }
 
-    BuzzRecordEntity winner = buzzRepository.findByQuestionId(question.id()).stream()
-        .filter(BuzzRecordEntity::successful)
-        .max(Comparator.comparingLong(BuzzRecordEntity::receiptOrder))
-        .orElseThrow(() -> new IllegalArgumentException("No buzz winner yet"));
+    BuzzRecordEntity winner = buzzRepository.findActiveWinner(question.id(), roundNumber);
+    if (winner == null) {
+      throw new IllegalArgumentException("No buzz winner yet");
+    }
     if (!winner.userId().equals(user.id())) {
       throw new SecurityException("Only the buzz winner can submit an answer right now");
     }
@@ -329,7 +388,7 @@ public final class SubmissionController {
     }
 
     String answerValue = submission.submittedAnswer();
-    String syncValue = user.displayName() + "：" + answerValue;
+    String syncValue = SheetAnswerFormatter.format(answerValue, user.displayName());
     googleSheetsSyncService.updateCell(config.sheetId(), targetCell, syncValue);
   }
 

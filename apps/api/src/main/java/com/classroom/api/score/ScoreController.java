@@ -22,33 +22,17 @@ public final class ScoreController {
   private final ClassroomRepository classroomRepository;
   private final UserRepository userRepository;
   private final ScoreRepository scoreRepository;
-  private final LeaderboardService leaderboardService;
 
   public ScoreController(
       AuthorizationGuard authorizationGuard,
       ClassroomRepository classroomRepository,
       UserRepository userRepository,
-      ScoreRepository scoreRepository,
-      LeaderboardService leaderboardService
+      ScoreRepository scoreRepository
   ) {
     this.authorizationGuard = authorizationGuard;
     this.classroomRepository = classroomRepository;
     this.userRepository = userRepository;
     this.scoreRepository = scoreRepository;
-    this.leaderboardService = leaderboardService;
-  }
-
-  public HttpHandlerFunction leaderboardHandler() {
-    return exchange -> {
-      AuthContext authContext = authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT, Role.STUDENT);
-      ClassroomEntity classroom = requireClassroom(exchange.queryParam("classroomCode"));
-      UserEntity requester = requireUser(authContext.subject());
-      boolean teacherView = authContext.role() != Role.STUDENT;
-      HttpResponses.json(exchange, 200, Map.of(
-          "classroomCode", classroom.classroomCode(),
-          "leaderboard", leaderboardService.leaderboard(classroom, teacherView, requester.id())
-      ));
-    };
   }
 
   public HttpHandlerFunction detailHandler() {

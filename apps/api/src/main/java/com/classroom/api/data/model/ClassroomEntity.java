@@ -10,7 +10,6 @@ public record ClassroomEntity(
     String name,
     String status,
     String participationSettings,
-    String leaderboardVisibility,
     UUID activeQuestionId,
     Instant createdAt,
     Instant updatedAt,

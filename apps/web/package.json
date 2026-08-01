@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc -b && vite build",
     "dev": "vite",
-    "lint": "tsc -b --noEmit"
+    "lint": "tsc -b --noEmit",
+    "test": "powershell -ExecutionPolicy Bypass -File scripts/test.ps1"
   },
   "dependencies": {
     "@classroom/shared": "0.1.0",

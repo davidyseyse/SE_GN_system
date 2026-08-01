@@ -25,15 +25,15 @@ export type QuestionState = (typeof questionStates)[number];
 export const buzzStates = ["IDLE", "OPEN", "LOCKED", "RESOLVED"] as const;
 export type BuzzState = (typeof buzzStates)[number];
 
-export const leaderboardVisibilityLevels = ["HIDDEN", "TOP_3", "TOP_10", "FULL"] as const;
-export type LeaderboardVisibility = (typeof leaderboardVisibilityLevels)[number];
-
 export const realtimeEventTypes = [
   "PRESENCE_UPDATED",
   "SESSION_RESYNCED",
   "QUESTION_STATE_CHANGED",
   "BUZZ_STATE_CHANGED",
-  "LEADERBOARD_UPDATED"
+  "SUBMISSION_CREATED",
+  "SUBMISSION_UPDATED",
+  "SUBMISSION_DELETED",
+  "SUBMISSION_REVIEWED"
 ] as const;
 export type RealtimeEventType = (typeof realtimeEventTypes)[number];
 

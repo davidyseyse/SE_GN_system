@@ -20,9 +20,13 @@ public final class BuzzRepository {
   }
 
   public void save(BuzzRecordEntity record) {
+    save(record, 0);
+  }
+
+  public void save(BuzzRecordEntity record, int roundNumber) {
     String sql = """
-        INSERT INTO buzz_records (id, classroom_id, question_id, user_id, request_id, receipt_order, received_at, outcome_status, successful)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO buzz_records (id, classroom_id, question_id, user_id, request_id, receipt_order, received_at, outcome_status, successful, round_number, active)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
         """;
 
     try (Connection connection = database.openConnection();
@@ -36,9 +40,46 @@ public final class BuzzRepository {
       statement.setTimestamp(7, SqlTime.from(record.receivedAt()));
       statement.setString(8, record.outcomeStatus());
       statement.setBoolean(9, record.successful());
+      statement.setInt(10, roundNumber);
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to save buzz record", exception);
+    }
+  }
+
+  public BuzzRecordEntity findActiveWinner(UUID questionId, int roundNumber) {
+    return findByQuestionId(questionId).stream()
+        .filter(BuzzRecordEntity::successful)
+        .filter(record -> isActive(record.id(), roundNumber))
+        .findFirst()
+        .orElse(null);
+  }
+
+  private boolean isActive(UUID recordId, int roundNumber) {
+    String sql = "SELECT 1 FROM buzz_records WHERE id = ? AND round_number = ? AND active = TRUE";
+    try (Connection connection = database.openConnection();
+         PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setObject(1, recordId);
+      statement.setInt(2, roundNumber);
+      return statement.executeQuery().next();
+    } catch (SQLException exception) {
+      throw new DatabaseException("Unable to check active buzz winner", exception);
+    }
+  }
+
+  public void cancelActiveWinner(UUID questionId, int roundNumber) {
+    String sql = """
+        UPDATE buzz_records
+        SET active = FALSE, successful = FALSE, outcome_status = 'CANCELLED'
+        WHERE question_id = ? AND round_number = ? AND successful = TRUE AND active = TRUE
+        """;
+    try (Connection connection = database.openConnection();
+         PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setObject(1, questionId);
+      statement.setInt(2, roundNumber);
+      statement.executeUpdate();
+    } catch (SQLException exception) {
+      throw new DatabaseException("Unable to cancel active buzz winner", exception);
     }
   }
 

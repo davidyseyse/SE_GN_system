@@ -51,6 +51,31 @@ public final class GoogleSheetsSyncService {
     }
   }
 
+  public void updateCells(String sheetId, Map<String, String> valuesByCell) {
+    if (credentials == null || valuesByCell.isEmpty()) {
+      return;
+    }
+    StringBuilder data = new StringBuilder();
+    for (Map.Entry<String, String> entry : valuesByCell.entrySet()) {
+      if (!data.isEmpty()) data.append(',');
+      data.append("{\"range\":\"").append(escape(entry.getKey()))
+          .append("\",\"majorDimension\":\"ROWS\",\"values\":[[\"")
+          .append(escape(entry.getValue())).append("\"]]}");
+    }
+    String url = "https://sheets.googleapis.com/v4/spreadsheets/" + sheetId
+        + "/values:batchUpdate";
+    String body = "{\"valueInputOption\":\"USER_ENTERED\",\"data\":[" + data + "]}";
+    HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+        .header("Authorization", "Bearer " + getAccessToken())
+        .header("Content-Type", "application/json; charset=utf-8")
+        .POST(HttpRequest.BodyPublishers.ofString(body)).build();
+    HttpResponse<String> response = send(request, "Unable to sync package answers to Google Sheets");
+    if (response.statusCode() >= 400) {
+      throw new IllegalStateException(
+          "Google Sheets batch update failed (HTTP " + response.statusCode() + "): " + response.body());
+    }
+  }
+
   private synchronized String getAccessToken() {
     if (accessToken != null && Instant.now().plusSeconds(TOKEN_REFRESH_MARGIN_SECONDS).isBefore(accessTokenExpiresAt)) {
       return accessToken;
