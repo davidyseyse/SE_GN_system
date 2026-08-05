@@ -10,26 +10,32 @@ import com.classroom.api.data.Database;
 import com.classroom.api.data.DatabaseException;
 import com.classroom.api.data.repository.AuditLogRepository;
 import com.classroom.api.data.repository.BuzzRepository;
+import com.classroom.api.data.repository.BuzzRoundRepository;
 import com.classroom.api.data.repository.ClassroomRepository;
-import com.classroom.api.data.repository.LeaderboardSnapshotRepository;
+import com.classroom.api.data.repository.CurrentBuzzStatusRepository;
 import com.classroom.api.data.repository.QuestionRepository;
+import com.classroom.api.data.repository.QuestionItemRepository;
 import com.classroom.api.data.repository.ScoreRepository;
 import com.classroom.api.data.repository.SheetConfigRepository;
 import com.classroom.api.data.repository.SubmissionRepository;
 import com.classroom.api.data.repository.UserRepository;
 import com.classroom.api.question.QuestionController;
+import com.classroom.api.question.QuestionBatchController;
+import com.classroom.api.question.QuestionLifecycleService;
+import com.classroom.api.question.QuestionPackageController;
+import com.classroom.api.question.QuestionPackageService;
 import com.classroom.api.redis.RedisBuzzLockService;
 import com.classroom.api.reporting.ReportingController;
 import com.classroom.api.realtime.RealtimeController;
 import com.classroom.api.realtime.RealtimeEventBroker;
 import com.classroom.api.realtime.RealtimeSessionController;
 import com.classroom.api.realtime.ws.WebSocketServer;
-import com.classroom.api.score.LeaderboardService;
 import com.classroom.api.score.ScoreController;
 import com.classroom.api.sheets.GoogleSheetsSyncService;
 import com.classroom.api.sheets.SheetConfigController;
 import com.classroom.api.student.StudentController;
 import com.classroom.api.submission.SubmissionController;
+import com.classroom.api.submission.PackageSubmissionController;
 import com.classroom.api.system.SystemController;
 import com.classroom.api.teacher.TeacherController;
 import com.sun.net.httpserver.HttpExchange;
@@ -131,26 +137,46 @@ public final class ApiServer {
     ClassroomRepository classroomRepository = new ClassroomRepository(database);
     UserRepository userRepository = new UserRepository(database);
     QuestionRepository questionRepository = new QuestionRepository(database);
+    QuestionItemRepository questionItemRepository = new QuestionItemRepository(database);
     BuzzRepository buzzRepository = new BuzzRepository(database);
+    BuzzRoundRepository buzzRoundRepository = new BuzzRoundRepository(database);
+    CurrentBuzzStatusRepository currentBuzzStatusRepository = new CurrentBuzzStatusRepository(database);
     SubmissionRepository submissionRepository = new SubmissionRepository(database);
     ScoreRepository scoreRepository = new ScoreRepository(database);
     SheetConfigRepository sheetConfigRepository = new SheetConfigRepository(database);
-    LeaderboardSnapshotRepository leaderboardSnapshotRepository = new LeaderboardSnapshotRepository(database);
     AuditLogRepository auditLogRepository = new AuditLogRepository(database);
     AuthTokenService authTokenService = authController.authTokenService();
     AuthorizationGuard authorizationGuard = new AuthorizationGuard(authTokenService);
     RealtimeEventBroker eventBroker = new RealtimeEventBroker();
     ClassroomController classroomController = new ClassroomController(classroomRepository, userRepository, authorizationGuard);
-    QuestionController questionController = new QuestionController(questionRepository, classroomRepository, userRepository, authorizationGuard, eventBroker);
     RealtimeController realtimeController = new RealtimeController(config, eventBroker);
     RealtimeSessionController realtimeSessionController = new RealtimeSessionController(authorizationGuard, eventBroker);
     RedisBuzzLockService redisBuzzLockService = new RedisBuzzLockService(config);
+    QuestionLifecycleService questionLifecycleService =
+        new QuestionLifecycleService(database, questionRepository, redisBuzzLockService, eventBroker);
+    QuestionPackageService questionPackageService =
+        new QuestionPackageService(database, questionItemRepository, sheetConfigRepository);
+    QuestionController questionController = new QuestionController(
+        questionRepository, classroomRepository, userRepository, authorizationGuard, eventBroker,
+        buzzRoundRepository, currentBuzzStatusRepository, questionLifecycleService,
+        questionItemRepository, questionPackageService);
+    QuestionBatchController questionBatchController =
+        new QuestionBatchController(authorizationGuard, classroomRepository, questionRepository, questionLifecycleService);
+    QuestionPackageController questionPackageController = new QuestionPackageController(
+        authorizationGuard, classroomRepository, userRepository, questionRepository,
+        questionItemRepository, questionPackageService);
     GoogleSheetsSyncService googleSheetsSyncService = new GoogleSheetsSyncService(config);
     SheetConfigController sheetConfigController = new SheetConfigController(authorizationGuard, sheetConfigRepository);
-    BuzzController buzzController = new BuzzController(authorizationGuard, classroomRepository, questionRepository, userRepository, buzzRepository, scoreRepository, redisBuzzLockService, eventBroker);
-    SubmissionController submissionController = new SubmissionController(authorizationGuard, classroomRepository, questionRepository, submissionRepository, scoreRepository, sheetConfigRepository, userRepository, buzzRepository, eventBroker, googleSheetsSyncService);
-    LeaderboardService leaderboardService = new LeaderboardService(scoreRepository, userRepository, leaderboardSnapshotRepository);
-    ScoreController scoreController = new ScoreController(authorizationGuard, classroomRepository, userRepository, scoreRepository, leaderboardService);
+    BuzzController buzzController = new BuzzController(
+        authorizationGuard, classroomRepository, questionRepository, userRepository, buzzRepository,
+        scoreRepository, redisBuzzLockService, eventBroker, buzzRoundRepository, submissionRepository,
+        questionLifecycleService, questionItemRepository);
+    SubmissionController submissionController = new SubmissionController(authorizationGuard, classroomRepository, questionRepository, submissionRepository, scoreRepository, sheetConfigRepository, userRepository, buzzRepository, eventBroker, googleSheetsSyncService, buzzRoundRepository);
+    PackageSubmissionController packageSubmissionController = new PackageSubmissionController(
+        authorizationGuard, classroomRepository, questionRepository, questionItemRepository,
+        submissionRepository, userRepository, buzzRepository, buzzRoundRepository,
+        sheetConfigRepository, questionPackageService, googleSheetsSyncService, eventBroker);
+    ScoreController scoreController = new ScoreController(authorizationGuard, classroomRepository, userRepository, scoreRepository);
     ReportingController reportingController = new ReportingController(authorizationGuard, classroomRepository, questionRepository, submissionRepository, buzzRepository, scoreRepository, userRepository, auditLogRepository);
     WebSocketServer webSocketServer = new WebSocketServer(config, authTokenService, eventBroker);
 
@@ -174,21 +200,26 @@ public final class ApiServer {
     router.add("GET", "/api/classrooms/members", classroomController.membersHandler());
     router.add("GET", "/api/classrooms/presence", classroomController.presenceHandler());
     router.add("POST", "/api/questions", questionController.createQuestionHandler());
+    router.add("POST", "/api/question-packages", questionPackageController.createHandler());
+    router.add("GET", "/api/question-packages", questionPackageController.listHandler());
     router.add("PUT", "/api/questions", questionController.updateQuestionHandler());
     router.add("POST", "/api/questions/archive", questionController.archiveQuestionHandler());
     router.add("POST", "/api/questions/delete", questionController.deleteQuestionHandler());
     router.add("POST", "/api/questions/reorder", questionController.reorderQuestionsHandler());
     router.add("GET", "/api/questions", questionController.listQuestionsHandler());
     router.add("POST", "/api/questions/state", questionController.transitionStateHandler());
+    router.add("POST", "/api/questions/batch", questionBatchController.batchHandler());
     router.add("POST", "/api/buzz", buzzController.buzzHandler());
     router.add("POST", "/api/buzz/cancel", buzzController.cancelHandler());
     router.add("POST", "/api/buzz/reset", buzzController.resetHandler());
     router.add("GET", "/api/buzz/history", buzzController.historyHandler());
     router.add("POST", "/api/submissions", submissionController.submitHandler());
+    router.add("POST", "/api/question-packages/answers", packageSubmissionController.submitHandler());
+    router.add("POST", "/api/question-packages/answers/retry", packageSubmissionController.retrySyncHandler());
+    router.add("GET", "/api/submissions", submissionController.listCurrentHandler());
     router.add("POST", "/api/submissions/answer", submissionController.updateAnswerHandler());
     router.add("POST", "/api/submissions/delete", submissionController.deleteAnswerHandler());
     router.add("POST", "/api/submissions/review", submissionController.reviewHandler());
-    router.add("GET", "/api/leaderboard", scoreController.leaderboardHandler());
     router.add("GET", "/api/scores/detail", scoreController.detailHandler());
     router.add("GET", "/api/reports/summary", reportingController.summaryHandler());
     router.add("GET", "/api/reports/question", reportingController.questionStatsHandler());

@@ -51,21 +51,6 @@ export function formatPresenceStatus(status: string) {
   }
 }
 
-export function formatLeaderboardVisibility(value: string) {
-  switch (value) {
-    case "HIDDEN":
-      return "隱藏";
-    case "TOP_3":
-      return "前 3 名";
-    case "TOP_10":
-      return "前 10 名";
-    case "FULL":
-      return "完整榜單";
-    default:
-      return value;
-  }
-}
-
 export function formatQuestionType(value: string) {
   switch (value) {
     case "SHORT_ANSWER":
@@ -100,10 +85,14 @@ export function formatRealtimeEventType(value: string) {
       return "已取消鎖定";
     case "BUZZ_RESET":
       return "已重置搶答";
-    case "SUBMISSION_RECEIVED":
+    case "SUBMISSION_CREATED":
       return "收到作答";
-    case "LEADERBOARD_UPDATED":
-      return "排行榜已更新";
+    case "SUBMISSION_UPDATED":
+      return "答案已更新";
+    case "SUBMISSION_DELETED":
+      return "答案已刪除";
+    case "SUBMISSION_REVIEWED":
+      return "答案已批改";
     case "PRESENCE_UPDATED":
       return "在線狀態已更新";
     default:

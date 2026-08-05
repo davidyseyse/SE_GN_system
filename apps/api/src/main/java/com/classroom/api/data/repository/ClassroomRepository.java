@@ -24,8 +24,8 @@ public final class ClassroomRepository {
 
   public void save(ClassroomEntity classroom) {
     String sql = """
-        INSERT INTO classrooms (id, teacher_id, classroom_code, name, status, participation_settings, leaderboard_visibility, active_question_id, created_at, updated_at, opened_at, closed_at)
-        VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?)
+        INSERT INTO classrooms (id, teacher_id, classroom_code, name, status, participation_settings, active_question_id, created_at, updated_at, opened_at, closed_at)
+        VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?)
         """;
 
     try (Connection connection = database.openConnection();
@@ -36,12 +36,11 @@ public final class ClassroomRepository {
       statement.setString(4, classroom.name());
       statement.setString(5, classroom.status());
       statement.setString(6, JsonValue.normalize(classroom.participationSettings()));
-      statement.setString(7, classroom.leaderboardVisibility());
-      statement.setObject(8, classroom.activeQuestionId());
-      statement.setTimestamp(9, SqlTime.from(classroom.createdAt()));
-      statement.setTimestamp(10, SqlTime.from(classroom.updatedAt()));
-      statement.setTimestamp(11, SqlTime.from(classroom.openedAt()));
-      statement.setTimestamp(12, SqlTime.from(classroom.closedAt()));
+      statement.setObject(7, classroom.activeQuestionId());
+      statement.setTimestamp(8, SqlTime.from(classroom.createdAt()));
+      statement.setTimestamp(9, SqlTime.from(classroom.updatedAt()));
+      statement.setTimestamp(10, SqlTime.from(classroom.openedAt()));
+      statement.setTimestamp(11, SqlTime.from(classroom.closedAt()));
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to save classroom", exception);
@@ -50,7 +49,7 @@ public final class ClassroomRepository {
 
   public ClassroomEntity findByCode(String classroomCode) {
     String sql = """
-        SELECT id, teacher_id, classroom_code, name, status, participation_settings::text, leaderboard_visibility, active_question_id, created_at, updated_at, opened_at, closed_at
+        SELECT id, teacher_id, classroom_code, name, status, participation_settings::text, active_question_id, created_at, updated_at, opened_at, closed_at
         FROM classrooms
         WHERE classroom_code = ?
         """;
@@ -69,7 +68,7 @@ public final class ClassroomRepository {
 
   public ClassroomEntity findById(UUID classroomId) {
     String sql = """
-        SELECT id, teacher_id, classroom_code, name, status, participation_settings::text, leaderboard_visibility, active_question_id, created_at, updated_at, opened_at, closed_at
+        SELECT id, teacher_id, classroom_code, name, status, participation_settings::text, active_question_id, created_at, updated_at, opened_at, closed_at
         FROM classrooms
         WHERE id = ?
         """;
@@ -138,6 +137,23 @@ public final class ClassroomRepository {
     }
   }
 
+  public boolean hasMember(UUID classroomId, UUID userId) {
+    String sql = """
+        SELECT 1
+        FROM classroom_members
+        WHERE classroom_id = ? AND user_id = ?
+        LIMIT 1
+        """;
+    try (Connection connection = database.openConnection();
+         PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setObject(1, classroomId);
+      statement.setObject(2, userId);
+      return statement.executeQuery().next();
+    } catch (SQLException exception) {
+      throw new DatabaseException("Unable to check classroom membership", exception);
+    }
+  }
+
   private static ClassroomEntity mapClassroom(ResultSet resultSet) throws SQLException {
     return new ClassroomEntity(
         resultSet.getObject("id", UUID.class),
@@ -146,7 +162,6 @@ public final class ClassroomRepository {
         resultSet.getString("name"),
         resultSet.getString("status"),
         resultSet.getString("participation_settings"),
-        resultSet.getString("leaderboard_visibility"),
         resultSet.getObject("active_question_id", UUID.class),
         resultSet.getTimestamp("created_at").toInstant(),
         resultSet.getTimestamp("updated_at").toInstant(),

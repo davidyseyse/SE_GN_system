@@ -21,9 +21,13 @@ public final class SubmissionRepository {
   }
 
   public void save(SubmissionEntity submission) {
+    save(submission, 0);
+  }
+
+  public void save(SubmissionEntity submission, int roundNumber) {
     String sql = """
-        INSERT INTO submissions (id, classroom_id, question_id, user_id, attempt_number, submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at)
-        VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?)
+        INSERT INTO submissions (id, classroom_id, question_id, user_id, attempt_number, submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, round_number)
+        VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?)
         """;
     try (Connection connection = database.openConnection();
          PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -39,6 +43,7 @@ public final class SubmissionRepository {
       statement.setString(10, submission.reviewStatus());
       statement.setTimestamp(11, SqlTime.from(submission.submittedAt()));
       statement.setTimestamp(12, SqlTime.from(submission.reviewedAt()));
+      statement.setInt(13, roundNumber);
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to save submission", exception);
@@ -79,17 +84,44 @@ public final class SubmissionRepository {
     }
   }
 
+  public List<SubmissionEntity> listByQuestionAndRound(UUID questionId, int roundNumber) {
+    String sql = """
+        SELECT id, classroom_id, question_id, user_id, attempt_number, submitted_answer #>> '{}' AS submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at
+        FROM submissions
+        WHERE question_id = ? AND round_number = ?
+        ORDER BY submitted_at ASC
+        """;
+    List<SubmissionEntity> results = new ArrayList<>();
+    try (Connection connection = database.openConnection();
+         PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setObject(1, questionId);
+      statement.setInt(2, roundNumber);
+      ResultSet resultSet = statement.executeQuery();
+      while (resultSet.next()) {
+        results.add(mapSubmission(resultSet));
+      }
+      return results;
+    } catch (SQLException exception) {
+      throw new DatabaseException("Unable to list current-round submissions", exception);
+    }
+  }
+
   public boolean hasSubmission(UUID questionId, UUID userId) {
+    return hasSubmission(questionId, userId, 0);
+  }
+
+  public boolean hasSubmission(UUID questionId, UUID userId, int roundNumber) {
     String sql = """
         SELECT 1
         FROM submissions
-        WHERE question_id = ? AND user_id = ?
+        WHERE question_id = ? AND user_id = ? AND round_number = ?
         LIMIT 1
         """;
     try (Connection connection = database.openConnection();
          PreparedStatement statement = connection.prepareStatement(sql)) {
       statement.setObject(1, questionId);
       statement.setObject(2, userId);
+      statement.setInt(3, roundNumber);
       ResultSet resultSet = statement.executeQuery();
       return resultSet.next();
     } catch (SQLException exception) {
@@ -159,6 +191,25 @@ public final class SubmissionRepository {
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to delete submission", exception);
+    }
+  }
+
+  public void updateSheetSync(UUID submissionId, String status, String error) {
+    String sql = """
+        UPDATE submissions
+        SET sheet_sync_status = ?, sheet_sync_error = ?,
+            sheet_synced_at = CASE WHEN ? = 'SYNCED' THEN NOW() ELSE sheet_synced_at END
+        WHERE id = ?
+        """;
+    try (Connection connection = database.openConnection();
+         PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setString(1, status);
+      statement.setString(2, error);
+      statement.setString(3, status);
+      statement.setObject(4, submissionId);
+      statement.executeUpdate();
+    } catch (SQLException exception) {
+      throw new DatabaseException("Unable to update sheet sync status", exception);
     }
   }
 

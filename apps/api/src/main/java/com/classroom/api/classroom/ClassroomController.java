@@ -41,7 +41,6 @@ public final class ClassroomController {
       Map<String, String> request = parseBody(exchange);
       String name = requiredValue(request, "name");
       String participationSettings = request.getOrDefault("participationSettings", "{}");
-      String leaderboardVisibility = request.getOrDefault("leaderboardVisibility", "HIDDEN");
 
       UserEntity actor = upsertActor(authContext);
       Instant now = Instant.now();
@@ -52,7 +51,6 @@ public final class ClassroomController {
           name,
           "DRAFT",
           participationSettings,
-          leaderboardVisibility,
           null,
           now,
           now,
@@ -75,8 +73,7 @@ public final class ClassroomController {
               "id", classroom.id().toString(),
               "code", classroom.classroomCode(),
               "name", classroom.name(),
-              "status", classroom.status(),
-              "leaderboardVisibility", classroom.leaderboardVisibility()
+              "status", classroom.status()
           )
       ));
     };

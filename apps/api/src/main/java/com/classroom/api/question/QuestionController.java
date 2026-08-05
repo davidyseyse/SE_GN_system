@@ -5,10 +5,14 @@ import com.classroom.api.auth.AuthorizationGuard;
 import com.classroom.api.contract.QuestionState;
 import com.classroom.api.contract.Role;
 import com.classroom.api.data.model.ClassroomEntity;
+import com.classroom.api.data.model.CurrentBuzzStatus;
 import com.classroom.api.data.model.QuestionEntity;
 import com.classroom.api.data.model.UserEntity;
 import com.classroom.api.data.repository.ClassroomRepository;
+import com.classroom.api.data.repository.BuzzRoundRepository;
+import com.classroom.api.data.repository.CurrentBuzzStatusRepository;
 import com.classroom.api.data.repository.QuestionRepository;
+import com.classroom.api.data.repository.QuestionItemRepository;
 import com.classroom.api.data.repository.UserRepository;
 import com.classroom.api.http.HttpExchangeAdapter;
 import com.classroom.api.http.HttpHandlerFunction;
@@ -29,13 +33,23 @@ public final class QuestionController {
   private final AuthorizationGuard authorizationGuard;
   private final RealtimeEventBroker eventBroker;
   private final QuestionStateMachine stateMachine;
+  private final BuzzRoundRepository buzzRoundRepository;
+  private final CurrentBuzzStatusRepository currentBuzzStatusRepository;
+  private final QuestionLifecycleService lifecycleService;
+  private final QuestionItemRepository questionItemRepository;
+  private final QuestionPackageService questionPackageService;
 
   public QuestionController(
       QuestionRepository questionRepository,
       ClassroomRepository classroomRepository,
       UserRepository userRepository,
       AuthorizationGuard authorizationGuard,
-      RealtimeEventBroker eventBroker
+      RealtimeEventBroker eventBroker,
+      BuzzRoundRepository buzzRoundRepository,
+      CurrentBuzzStatusRepository currentBuzzStatusRepository,
+      QuestionLifecycleService lifecycleService,
+      QuestionItemRepository questionItemRepository,
+      QuestionPackageService questionPackageService
   ) {
     this.questionRepository = questionRepository;
     this.classroomRepository = classroomRepository;
@@ -43,6 +57,11 @@ public final class QuestionController {
     this.authorizationGuard = authorizationGuard;
     this.eventBroker = eventBroker;
     this.stateMachine = new QuestionStateMachine();
+    this.buzzRoundRepository = buzzRoundRepository;
+    this.currentBuzzStatusRepository = currentBuzzStatusRepository;
+    this.lifecycleService = lifecycleService;
+    this.questionItemRepository = questionItemRepository;
+    this.questionPackageService = questionPackageService;
   }
 
   public HttpHandlerFunction createQuestionHandler() {
@@ -51,27 +70,16 @@ public final class QuestionController {
       Map<String, String> request = parseBody(exchange);
       ClassroomEntity classroom = requireClassroom(requiredValue(request, "classroomCode"));
       UserEntity actor = requireUser(authContext.subject());
-      int ordinal = nextOrdinal(classroom.id());
-      Instant now = Instant.now();
-
-      QuestionEntity question = new QuestionEntity(
-          UUID.randomUUID(),
-          classroom.id(),
-          ordinal,
-          requiredValue(request, "type"),
-          QuestionState.DRAFT.name(),
-          requiredValue(request, "prompt"),
-          request.getOrDefault("answerKey", "{}"),
-          request.getOrDefault("publicationSettings", "{}"),
+      Map<String, String> settings = JsonMapParser.parseObject(
+          request.getOrDefault("publicationSettings", "{}"));
+      UUID sheetConfigId = UUID.fromString(requiredValue(settings, "sheetConfigId"));
+      String targetCell = requiredValue(settings, "targetCell");
+      QuestionPackageService.CreatedPackage created = questionPackageService.create(
+          classroom.id(), actor.id(), requiredValue(request, "prompt"), sheetConfigId,
+          List.of(new QuestionPackageService.ItemDraft(requiredValue(request, "prompt"), targetCell)),
           parseInteger(request.getOrDefault("score", "0"), "score"),
-          parseNullableInteger(request.get("answerTimeLimitSeconds"), "answerTimeLimitSeconds"),
-          actor.id(),
-          now,
-          now,
-          null
-      );
-
-      questionRepository.save(question);
+          parseNullableInteger(request.get("answerTimeLimitSeconds"), "answerTimeLimitSeconds"));
+      QuestionEntity question = created.packageEntity();
       HttpResponses.json(exchange, 201, Map.of("question", serialize(question)));
     };
   }
@@ -172,9 +180,37 @@ public final class QuestionController {
       AuthContext authContext = authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT, Role.STUDENT);
       ClassroomEntity classroom = requireClassroom(requiredQuery(exchange, "classroomCode"));
       List<QuestionEntity> questions = questionRepository.listByClassroom(classroom.id());
+      Map<UUID, CurrentBuzzStatus> buzzStatuses = authContext.role() == Role.STUDENT
+          ? Map.of() : currentBuzzStatusRepository.listByClassroom(classroom.id());
       List<Map<String, Object>> payload = questions.stream()
           .filter(question -> authContext.role() != Role.STUDENT || isVisibleToStudent(question))
-          .map(question -> authContext.role() == Role.STUDENT ? serializeForStudent(question) : serialize(question))
+          .map(question -> {
+            Map<String, Object> serialized = new LinkedHashMap<>(
+                authContext.role() == Role.STUDENT ? serializeForStudent(question) : serialize(question));
+            serialized.put("packageId", question.id().toString());
+            serialized.put("title", question.prompt());
+            serialized.put("items", questionItemRepository.listByQuestionId(question.id()).stream()
+                .map(item -> Map.<String, Object>of(
+                    "id", item.id().toString(),
+                    "ordinal", item.ordinal(),
+                    "prompt", item.prompt(),
+                    "targetCell", authContext.role() == Role.STUDENT
+                        ? "" : item.targetCell() == null ? "" : item.targetCell()))
+                .toList());
+            serialized.put("roundId", Integer.toString(buzzRoundRepository.current(question.id())));
+            if (authContext.role() != Role.STUDENT) {
+              CurrentBuzzStatus buzzStatus = buzzStatuses.get(question.id());
+              if (buzzStatus != null) {
+                serialized.put("buzzStatus", buzzStatus.buzzStatus());
+                serialized.put("winnerUserId", buzzStatus.winnerUserId() == null ? "" : buzzStatus.winnerUserId().toString());
+                serialized.put("winnerExternalUserId", valueOrEmpty(buzzStatus.winnerExternalUserId()));
+                serialized.put("winnerDisplayName", valueOrEmpty(buzzStatus.winnerDisplayName()));
+                serialized.put("submissionStatus", valueOrEmpty(buzzStatus.submissionStatus()));
+                serialized.put("reviewStatus", valueOrEmpty(buzzStatus.reviewStatus()));
+              }
+            }
+            return serialized;
+          })
           .toList();
 
       HttpResponses.json(exchange, 200, Map.of(
@@ -192,37 +228,16 @@ public final class QuestionController {
       UUID questionId = UUID.fromString(requiredValue(request, "questionId"));
       QuestionState targetState = QuestionState.valueOf(requiredValue(request, "targetState").toUpperCase());
       QuestionEntity existing = requireQuestion(classroom.id(), questionId);
-      stateMachine.assertTransitionAllowed(QuestionState.valueOf(existing.state()), targetState);
-
-      QuestionEntity updated = new QuestionEntity(
-          existing.id(),
-          existing.classroomId(),
-          existing.ordinal(),
-          existing.type(),
-          targetState.name(),
-          existing.prompt(),
-          existing.answerKey(),
-          existing.publicationSettings(),
-          existing.score(),
-          existing.answerTimeLimitSeconds(),
-          existing.createdBy(),
-          existing.createdAt(),
-          Instant.now(),
-          existing.archivedAt()
-      );
-
-      questionRepository.update(updated);
-      eventBroker.publish(classroom.classroomCode(), "QUESTION_STATE_CHANGED", Map.of(
-          "questionId", updated.id().toString(),
-          "state", updated.state(),
-          "prompt", updated.prompt()
-      ));
+      QuestionLifecycleService.OperationResult operation =
+          lifecycleService.transition(classroom, existing, targetState);
+      QuestionEntity updated = requireQuestion(classroom.id(), questionId);
       HttpResponses.json(exchange, 200, Map.of(
           "question", serialize(updated),
           "event", Map.of(
               "type", "QUESTION_STATE_CHANGED",
               "questionId", updated.id().toString(),
               "state", updated.state(),
+              "roundId", Integer.toString(operation.roundId()),
               "occurredAt", updated.updatedAt().toString()
           )
       ));
@@ -292,6 +307,10 @@ public final class QuestionController {
         "answerKey", showAnswer ? question.answerKey() : "",
         "score", question.score()
     );
+  }
+
+  private static String valueOrEmpty(String value) {
+    return value == null ? "" : value;
   }
 
   private static Map<String, String> parseBody(HttpExchangeAdapter exchange) throws IOException {

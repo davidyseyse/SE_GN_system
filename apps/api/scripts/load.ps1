@@ -17,10 +17,14 @@ try {
   $teacherToken = New-Token -DisplayName "Load Teacher" -Role "TEACHER" -UserId "load-teacher"
   $classroomResponse = Invoke-ApiJson -Method "POST" -Path "/api/classrooms" -Token $teacherToken -Body @{
     name = "Load Room"
-    leaderboardVisibility = "TOP_10"
     participationSettings = '{"buzzBonus":5,"wrongAnswerPenalty":1}'
   }
   $classroomCode = [string]$classroomResponse.Body.classroom.code
+  $sheetConfig = Invoke-ApiJson -Method "POST" -Path "/api/sheet-configs" -Token $teacherToken -Body @{
+    name = "Load Sheet"
+    sheetId = "load-sheet-$([guid]::NewGuid())"
+  }
+  $sheetConfigId = [string]$sheetConfig.Body.config.id
 
   $studentTokens = @()
   for ($index = 1; $index -le 100; $index++) {
@@ -52,11 +56,11 @@ try {
     type = "BUZZ"
     score = 0
     answerKey = "buzz"
-    publicationSettings = '{"showAnswer":false}'
+    publicationSettings = (@{ showAnswer = $false; sheetConfigId = $sheetConfigId; targetCell = "A1" } | ConvertTo-Json -Compress)
     answerTimeLimitSeconds = 10
   }
   $buzzQuestionId = [string]$buzzQuestion.Body.question.id
-  foreach ($targetState in @("READY", "BUZZ_OPEN")) {
+  foreach ($targetState in @("BUZZ_OPEN")) {
     $transition = Invoke-ApiJson -Method "POST" -Path "/api/questions/state" -Token $teacherToken -Body @{
       classroomCode = $classroomCode
       questionId = $buzzQuestionId
@@ -96,14 +100,14 @@ $sessionResponse = Invoke-ApiJson -Method "POST" -Path "/api/realtime/session" -
     type = "SHORT_ANSWER"
     score = 5
     answerKey = "ok"
-    publicationSettings = '{"showAnswer":false}'
+    publicationSettings = (@{ showAnswer = $false; sheetConfigId = $sheetConfigId; targetCell = "A2" } | ConvertTo-Json -Compress)
     answerTimeLimitSeconds = 20
   }
   $answerQuestionId = [string]$answerQuestion.Body.question.id
   $readyTransition = Invoke-ApiJson -Method "POST" -Path "/api/questions/state" -Token $teacherToken -Body @{
     classroomCode = $classroomCode
     questionId = $answerQuestionId
-    targetState = "READY"
+    targetState = "ANSWER_OPEN"
   }
   Assert-True ($readyTransition.StatusCode -eq 200) "Failed to publish reconnect event"
 

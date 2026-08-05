@@ -79,9 +79,16 @@ function Start-ApiProcess {
   )
 
   $classPath = Get-JavaClassPath
-  $logPath = Join-Path $env:TEMP "classroom-api-server.log"
-  $errorPath = Join-Path $env:TEMP "classroom-api-server.err.log"
-  $process = Start-Process -FilePath "java" -ArgumentList @("-cp", $classPath, "com.classroom.api.Main") -WorkingDirectory $ProjectRoot -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $errorPath -PassThru
+  $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+  $startInfo.FileName = "java"
+  $startInfo.Arguments = "-cp `"$classPath`" com.classroom.api.Main"
+  $startInfo.WorkingDirectory = $ProjectRoot
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+
+  $process = New-Object System.Diagnostics.Process
+  $process.StartInfo = $startInfo
+  [void]$process.Start()
   return $process
 }
 
@@ -91,7 +98,10 @@ function Stop-ApiProcess {
   )
 
   if ($null -ne $Process -and -not $Process.HasExited) {
-    Stop-Process -Id $Process.Id -Force
+    $Process.Kill($true)
+    if (-not $Process.WaitForExit(5000)) {
+      throw "API process $($Process.Id) did not exit within 5 seconds"
+    }
   }
 }
 
@@ -235,15 +245,39 @@ function Query-AuditCount {
   }
 }
 
+function Query-QuestionCountByState {
+  param(
+    [string]$RepoRoot,
+    [string]$State
+  )
+
+  Push-Location $RepoRoot
+  try {
+    $count = docker compose exec -T postgres psql -U classroom -d classroom -t -A -c "select count(*) from questions where state = '$State';"
+    return [int]$count.Trim()
+  }
+  finally {
+    Pop-Location
+  }
+}
+
 function Receive-WebSocketText {
   param(
-    [System.Net.WebSockets.ClientWebSocket]$Socket
+    [System.Net.WebSockets.ClientWebSocket]$Socket,
+    [int]$TimeoutSeconds = 10
   )
 
   $buffer = New-Object byte[] 4096
   $segment = [System.ArraySegment[byte]]::new($buffer)
-  $result = $Socket.ReceiveAsync($segment, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
-  return [System.Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count)
+  $cancellation = New-Object System.Threading.CancellationTokenSource
+  try {
+    $cancellation.CancelAfter([TimeSpan]::FromSeconds($TimeoutSeconds))
+    $result = $Socket.ReceiveAsync($segment, $cancellation.Token).GetAwaiter().GetResult()
+    return [System.Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count)
+  }
+  finally {
+    $cancellation.Dispose()
+  }
 }
 
 function Open-RawWebSocket {
@@ -256,6 +290,8 @@ function Open-RawWebSocket {
   $client = New-Object System.Net.Sockets.TcpClient
   $client.Connect("127.0.0.1", 8081)
   $stream = $client.GetStream()
+  $stream.ReadTimeout = 10000
+  $stream.WriteTimeout = 10000
   $key = [Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes([guid]::NewGuid().ToString("N")))
   $request = "GET /ws?token=$([Uri]::EscapeDataString($Token))&classroomCode=$ClassroomCode&sessionId=$SessionId HTTP/1.1`r`nHost: 127.0.0.1:8081`r`nUpgrade: websocket`r`nConnection: Upgrade`r`nSec-WebSocket-Version: 13`r`nSec-WebSocket-Key: $key`r`n`r`n"
   $bytes = [System.Text.Encoding]::ASCII.GetBytes($request)
