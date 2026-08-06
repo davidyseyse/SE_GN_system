@@ -25,12 +25,19 @@ public final class SubmissionRepository {
   }
 
   public void save(SubmissionEntity submission, int roundNumber) {
+    try (Connection connection = database.openConnection()) {
+      save(connection, submission, roundNumber);
+    } catch (SQLException exception) {
+      throw new DatabaseException("Unable to save submission", exception);
+    }
+  }
+
+  public void save(Connection connection, SubmissionEntity submission, int roundNumber) {
     String sql = """
         INSERT INTO submissions (id, classroom_id, question_id, user_id, attempt_number, submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, round_number)
         VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?)
         """;
-    try (Connection connection = database.openConnection();
-         PreparedStatement statement = connection.prepareStatement(sql)) {
+    try (PreparedStatement statement = connection.prepareStatement(sql)) {
       statement.setObject(1, submission.id());
       statement.setObject(2, submission.classroomId());
       statement.setObject(3, submission.questionId());

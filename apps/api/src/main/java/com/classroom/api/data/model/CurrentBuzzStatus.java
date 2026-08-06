@@ -1,5 +1,6 @@
 package com.classroom.api.data.model;
 
+import java.time.Instant;
 import java.util.UUID;
 
 public record CurrentBuzzStatus(
@@ -9,6 +10,7 @@ public record CurrentBuzzStatus(
     UUID winnerUserId,
     String winnerExternalUserId,
     String winnerDisplayName,
+    Instant answerDeadlineAt,
     String submissionStatus,
     String reviewStatus
 ) {

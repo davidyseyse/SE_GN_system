@@ -4,6 +4,7 @@ import com.classroom.api.auth.AuthController;
 import com.classroom.api.auth.AuthTokenService;
 import com.classroom.api.auth.AuthorizationGuard;
 import com.classroom.api.buzz.BuzzController;
+import com.classroom.api.buzz.BuzzDeadlineService;
 import com.classroom.api.classroom.ClassroomController;
 import com.classroom.api.config.ServerConfig;
 import com.classroom.api.data.Database;
@@ -44,13 +45,16 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-public final class ApiServer {
+public final class ApiServer implements AutoCloseable {
   private final ServerConfig config;
   private final HttpServer server;
   private final Router router;
   private final WebSocketServer webSocketServer;
+  private final BuzzDeadlineService buzzDeadlineService;
+  private final ExecutorService requestExecutor;
 
   public ApiServer(ServerConfig config) throws IOException {
     this.config = config;
@@ -58,13 +62,29 @@ public final class ApiServer {
     RouterContext routerContext = buildRouter(config);
     this.router = routerContext.router();
     this.webSocketServer = routerContext.webSocketServer();
+    this.buzzDeadlineService = routerContext.buzzDeadlineService();
+    this.requestExecutor = Executors.newCachedThreadPool();
     this.server.createContext("/", new RootHandler(config, this.router));
-    this.server.setExecutor(Executors.newCachedThreadPool());
+    this.server.setExecutor(requestExecutor);
   }
 
   public void start() throws IOException {
-    server.start();
-    webSocketServer.start();
+    buzzDeadlineService.start();
+    try {
+      webSocketServer.start();
+      server.start();
+    } catch (IOException | RuntimeException exception) {
+      close();
+      throw exception;
+    }
+  }
+
+  @Override
+  public void close() {
+    buzzDeadlineService.close();
+    webSocketServer.close();
+    server.stop(0);
+    requestExecutor.shutdownNow();
   }
 
   private static final class RootHandler implements HttpHandler {
@@ -152,6 +172,8 @@ public final class ApiServer {
     RealtimeController realtimeController = new RealtimeController(config, eventBroker);
     RealtimeSessionController realtimeSessionController = new RealtimeSessionController(authorizationGuard, eventBroker);
     RedisBuzzLockService redisBuzzLockService = new RedisBuzzLockService(config);
+    BuzzDeadlineService buzzDeadlineService = new BuzzDeadlineService(
+        database, buzzRepository, submissionRepository, redisBuzzLockService, eventBroker);
     QuestionLifecycleService questionLifecycleService =
         new QuestionLifecycleService(database, questionRepository, redisBuzzLockService, eventBroker);
     QuestionPackageService questionPackageService =
@@ -169,13 +191,17 @@ public final class ApiServer {
     SheetConfigController sheetConfigController = new SheetConfigController(authorizationGuard, sheetConfigRepository);
     BuzzController buzzController = new BuzzController(
         authorizationGuard, classroomRepository, questionRepository, userRepository, buzzRepository,
-        scoreRepository, redisBuzzLockService, eventBroker, buzzRoundRepository, submissionRepository,
-        questionLifecycleService, questionItemRepository);
-    SubmissionController submissionController = new SubmissionController(authorizationGuard, classroomRepository, questionRepository, submissionRepository, scoreRepository, sheetConfigRepository, userRepository, buzzRepository, eventBroker, googleSheetsSyncService, buzzRoundRepository);
+        scoreRepository, redisBuzzLockService, buzzDeadlineService, eventBroker,
+        buzzRoundRepository, questionLifecycleService, questionItemRepository);
+    SubmissionController submissionController = new SubmissionController(
+        authorizationGuard, classroomRepository, questionRepository, submissionRepository,
+        scoreRepository, sheetConfigRepository, userRepository, eventBroker,
+        googleSheetsSyncService, buzzRoundRepository, buzzDeadlineService);
     PackageSubmissionController packageSubmissionController = new PackageSubmissionController(
         authorizationGuard, classroomRepository, questionRepository, questionItemRepository,
-        submissionRepository, userRepository, buzzRepository, buzzRoundRepository,
-        sheetConfigRepository, questionPackageService, googleSheetsSyncService, eventBroker);
+        submissionRepository, userRepository, buzzRoundRepository,
+        sheetConfigRepository, questionPackageService, googleSheetsSyncService, eventBroker,
+        buzzDeadlineService);
     ScoreController scoreController = new ScoreController(authorizationGuard, classroomRepository, userRepository, scoreRepository);
     ReportingController reportingController = new ReportingController(authorizationGuard, classroomRepository, questionRepository, submissionRepository, buzzRepository, scoreRepository, userRepository, auditLogRepository);
     WebSocketServer webSocketServer = new WebSocketServer(config, authTokenService, eventBroker);
@@ -225,9 +251,13 @@ public final class ApiServer {
     router.add("GET", "/api/reports/question", reportingController.questionStatsHandler());
     router.add("GET", "/api/reports/submissions", reportingController.submissionsHandler());
     router.add("GET", "/api/reports/export", reportingController.exportHandler());
-    return new RouterContext(router, webSocketServer);
+    return new RouterContext(router, webSocketServer, buzzDeadlineService);
   }
 
-  private record RouterContext(Router router, WebSocketServer webSocketServer) {
+  private record RouterContext(
+      Router router,
+      WebSocketServer webSocketServer,
+      BuzzDeadlineService buzzDeadlineService
+  ) {
   }
 }

@@ -41,6 +41,7 @@ export type QuestionView = ClassroomQuestionContract & {
   winnerUserId?: string;
   winnerExternalUserId?: string;
   winnerDisplayName?: string;
+  answerDeadlineAt?: string;
   submissionStatus?: string;
   reviewStatus?: string;
 };
@@ -301,7 +302,7 @@ export async function submitAnswer(token: string, classroomCode: string, questio
 }
 
 export async function submitBuzz(token: string, classroomCode: string, questionId: string) {
-  return request<{ accepted: boolean; outcomeStatus: string; requestId: string }>(
+  return request<{ accepted: boolean; outcomeStatus: string; requestId: string; answerDeadlineAt: string }>(
     "/api/buzz",
     {
       method: "POST",

@@ -100,6 +100,7 @@ export function TeacherDashboardPage() {
   const [resumeClassroomCode, setResumeClassroomCode] = useState(stored?.classroomCode ?? "");
   const [classroomName, setClassroomName] = useState("課堂 A");
   const [questionPackageTitle, setQuestionPackageTitle] = useState("");
+  const [answerTimeLimitSeconds, setAnswerTimeLimitSeconds] = useState("30");
   const [questionItems, setQuestionItems] = useState<Array<{ clientId: string; prompt: string; targetCell: string }>>([
     { clientId: crypto.randomUUID(), prompt: "", targetCell: "" }
   ]);
@@ -233,16 +234,22 @@ export function TeacherDashboardPage() {
     if (!teacherToken || !classroomCode) {
       return;
     }
+    const configuredAnswerTimeLimitSeconds = Number(answerTimeLimitSeconds);
+    if (!Number.isInteger(configuredAnswerTimeLimitSeconds) || configuredAnswerTimeLimitSeconds <= 0) {
+      setNotice("作答時限必須是正整數秒數。");
+      return;
+    }
     const result = await createQuestionPackage(teacherToken, classroomCode, {
       title: questionPackageTitle,
       sheetConfigId: selectedSheetConfigId,
       items: questionItems.map(({ prompt, targetCell }) => ({ prompt, targetCell })),
       score: 10,
-      answerTimeLimitSeconds: 30
+      answerTimeLimitSeconds: configuredAnswerTimeLimitSeconds
     });
     setQuestions((current) => [...current, result.package]);
     setSelectedQuestionId(String(result.package.id));
     setQuestionPackageTitle("");
+    setAnswerTimeLimitSeconds("30");
     setQuestionItems([{ clientId: crypto.randomUUID(), prompt: "", targetCell: "" }]);
     setNotice("題目已建立。");
   }
@@ -385,6 +392,8 @@ export function TeacherDashboardPage() {
   const isQuestionPackageValid = Boolean(
     questionPackageTitle.trim()
     && selectedSheetConfigId
+    && Number.isInteger(Number(answerTimeLimitSeconds))
+    && Number(answerTimeLimitSeconds) > 0
     && questionItems.length > 0
     && questionItems.every((item) =>
       item.prompt.trim() && singleCellPattern.test(item.targetCell.trim())
@@ -460,6 +469,17 @@ export function TeacherDashboardPage() {
               value={questionPackageTitle}
               onChange={(event) => setQuestionPackageTitle(event.target.value)}
               placeholder="題目標題"
+            />
+          </label>
+          <label>
+            作答時限（秒）
+            <input
+              type="number"
+              min="1"
+              step="1"
+              inputMode="numeric"
+              value={answerTimeLimitSeconds}
+              onChange={(event) => setAnswerTimeLimitSeconds(event.target.value)}
             />
           </label>
           {questionItems.map((item, index) => (

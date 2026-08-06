@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type QuestionItemView, type SubmittedAnswerView, cancelBuzz, getCurrentAnswers, listQuestions, submitBuzz, submitPackageAnswers } from "../lib/api";
+import { createLatestRequestGate } from "../lib/latestRequestGate";
 import { clearSession, readSession } from "../lib/session";
 import { formatQuestionState, formatRealtimeStatus } from "../lib/text";
 import { useRealtimeFeed } from "../realtime/useRealtimeFeed";
-import { formatPackageAnswer } from "../lib/questionPackageAnswer";
 import {
   buzzInteractionKey,
   canCancelBuzz,
   mergeSubmittedInteractionKeys,
   ownSubmittedInteractionKeys,
+  remainingAnswerSeconds,
   realtimeEventApplies,
-  removeQuestionRoundKeys
+  removeInteractionEntry,
+  removeQuestionRoundKeys,
+  timeoutCancellationNotice
 } from "./buzzRoundState";
 
 type RealtimeEventView = {
@@ -24,6 +27,8 @@ type RealtimeEventView = {
     packageId?: string;
     successful?: boolean;
     roundId?: string;
+    reason?: string;
+    answerDeadlineAt?: string;
   };
 };
 
@@ -33,9 +38,12 @@ export function StudentPlayPage() {
   const [answersByQuestionId, setAnswersByQuestionId] = useState<Record<string, Record<string, string>>>({});
   const [currentAnswersByQuestionId, setCurrentAnswersByQuestionId] = useState<Record<string, SubmittedAnswerView[]>>({});
   const [locallyWonQuestionIds, setLocallyWonQuestionIds] = useState<Record<string, boolean>>({});
+  const [localDeadlineByInteractionKey, setLocalDeadlineByInteractionKey] = useState<Record<string, string>>({});
+  const [countdownNowMs, setCountdownNowMs] = useState(() => Date.now());
   const [submittedQuestionIds, setSubmittedQuestionIds] = useState<string[]>([]);
   const [submittingQuestionIds, setSubmittingQuestionIds] = useState<string[]>([]);
   const submittingKeysRef = useRef(new Set<string>());
+  const answerRefreshGateRef = useRef(createLatestRequestGate());
   const [noticeByQuestionId, setNoticeByQuestionId] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState("請等待教師開放搶答。");
   const realtime = useRealtimeFeed(session?.token ?? null, session?.classroomCode ?? null);
@@ -51,7 +59,20 @@ export function StudentPlayPage() {
   }, [questions]);
 
   const buzzWinnerByQuestionId = useMemo(() => {
-    const winners: Record<string, string> = {};
+    const winners: Record<string, { userId: string; answerDeadlineAt: string }> = {};
+    for (const question of questions) {
+      if (String(question.buzzStatus ?? "") !== "WINNER_ANSWERING") {
+        continue;
+      }
+      const questionId = String(question.id);
+      const winnerUserId = String(question.winnerExternalUserId ?? "");
+      if (winnerUserId) {
+        winners[questionId] = {
+          userId: winnerUserId,
+          answerDeadlineAt: String(question.answerDeadlineAt ?? "")
+        };
+      }
+    }
     for (const event of realtime.events as RealtimeEventView[]) {
       const questionId = event.payload?.packageId ?? event.payload?.questionId;
       if (!questionId) {
@@ -63,14 +84,22 @@ export function StudentPlayPage() {
         continue;
       }
       if (event.type === "BUZZ_RESULT" && event.payload?.successful) {
-        winners[questionId] = String(event.payload.externalUserId ?? event.payload.userId ?? "");
+        winners[questionId] = {
+          userId: String(event.payload.externalUserId ?? event.payload.userId ?? ""),
+          answerDeadlineAt: String(event.payload.answerDeadlineAt ?? "")
+        };
       }
       if (event.type === "BUZZ_CANCELLED" || event.type === "BUZZ_RESET") {
         delete winners[questionId];
       }
     }
     return winners;
-  }, [realtime.events, currentRoundByQuestionId]);
+  }, [questions, realtime.events, currentRoundByQuestionId]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setCountdownNowMs(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const latestEvent = (realtime.events as RealtimeEventView[]).at(-1);
@@ -80,48 +109,78 @@ export function StudentPlayPage() {
     }
     const eventRoundId = String(latestEvent.payload?.roundId ?? "0");
     const currentRoundId = currentRoundByQuestionId[questionId] ?? "0";
+    const expirationNotice = timeoutCancellationNotice(
+      latestEvent.type,
+      latestEvent.payload?.reason,
+      eventRoundId,
+      currentRoundId
+    );
     if (!realtimeEventApplies(latestEvent.type, eventRoundId, currentRoundId)) {
       return;
     }
     if (latestEvent.type === "BUZZ_CANCELLED" || latestEvent.type === "BUZZ_RESET") {
       const interactionKey = buzzInteractionKey(questionId, eventRoundId);
-      setLocallyWonQuestionIds((current) => {
-        const next = { ...current };
-        delete next[interactionKey];
-        return next;
-      });
-      setAnswersByQuestionId((current) => {
-        const next = { ...current };
-        delete next[interactionKey];
-        return next;
-      });
+      setLocallyWonQuestionIds((current) => removeInteractionEntry(current, interactionKey));
+      setLocalDeadlineByInteractionKey((current) => removeInteractionEntry(current, interactionKey));
+      setAnswersByQuestionId((current) => removeInteractionEntry(current, interactionKey));
       if (latestEvent.type === "BUZZ_RESET") {
         setSubmittedQuestionIds((current) => removeQuestionRoundKeys(current, questionId));
+      }
+      if (expirationNotice) {
+        setNoticeByQuestionId((current) => ({
+          ...current,
+          [questionId]: expirationNotice
+        }));
       }
     }
   }, [realtime.events, currentRoundByQuestionId]);
 
-  useEffect(() => {
+  const refreshStudentView = useCallback(async () => {
     if (!session?.token || !session.classroomCode) {
       return;
     }
-    void listQuestions(session.token, session.classroomCode).then(async (result) => {
+
+    const requestId = answerRefreshGateRef.current.begin();
+    try {
+      const result = await listQuestions(session.token, session.classroomCode);
       const loadedQuestions = result.questions as unknown as Array<Record<string, unknown>>;
+      if (!answerRefreshGateRef.current.isCurrent(requestId)) {
+        return;
+      }
       setQuestions(loadedQuestions);
-      const answerResults = await Promise.all(loadedQuestions.map((question) =>
+
+      const answerResults = await Promise.allSettled(loadedQuestions.map((question) =>
         getCurrentAnswers(session.token, session.classroomCode!, String(question.id))
       ));
-      setCurrentAnswersByQuestionId(Object.fromEntries(
-        answerResults.map((answerResult) => [answerResult.questionId, answerResult.answers])
-      ));
+      if (!answerRefreshGateRef.current.isCurrent(requestId)) {
+        return;
+      }
 
-      const answersByQuestionId = Object.fromEntries(
-        answerResults.map((answerResult) => [answerResult.questionId, answerResult.answers])
-      );
-      const ownSubmittedKeys = ownSubmittedInteractionKeys(loadedQuestions, answersByQuestionId);
+      const loadedAnswersByQuestionId: Record<string, SubmittedAnswerView[]> = {};
+      for (const answerResult of answerResults) {
+        if (answerResult.status === "fulfilled") {
+          loadedAnswersByQuestionId[answerResult.value.questionId] = answerResult.value.answers;
+        }
+      }
+      setCurrentAnswersByQuestionId((current) => Object.fromEntries(
+        loadedQuestions.map((question) => {
+          const questionId = String(question.id);
+          return [questionId, loadedAnswersByQuestionId[questionId] ?? current[questionId] ?? []];
+        })
+      ));
+      const ownSubmittedKeys = ownSubmittedInteractionKeys(loadedQuestions, loadedAnswersByQuestionId);
       setSubmittedQuestionIds((current) => mergeSubmittedInteractionKeys(current, ownSubmittedKeys));
-    });
-  }, [session?.token, session?.classroomCode, realtime.events.length]);
+    } catch (error) {
+      if (answerRefreshGateRef.current.isCurrent(requestId)) {
+        setNotice(error instanceof Error ? error.message : "答案載入失敗。");
+      }
+    }
+  }, [session?.token, session?.classroomCode]);
+
+  useEffect(() => {
+    void refreshStudentView();
+    return () => answerRefreshGateRef.current.invalidate();
+  }, [refreshStudentView, realtime.events]);
 
   if (!session?.token || !session.classroomCode) {
     return (
@@ -152,12 +211,14 @@ export function StudentPlayPage() {
           answer: answersByQuestionId[interactionKey]?.[item.id] ?? ""
         }))
       );
+      await refreshStudentView();
       setSubmittedQuestionIds((current) => mergeSubmittedInteractionKeys(current, [interactionKey]));
       setLocallyWonQuestionIds((current) => {
         const next = { ...current };
         delete next[interactionKey];
         return next;
       });
+      setLocalDeadlineByInteractionKey((current) => removeInteractionEntry(current, interactionKey));
       setNoticeByQuestionId((current) => ({
         ...current,
         [questionId]: "✓ 已作答"
@@ -178,6 +239,12 @@ export function StudentPlayPage() {
       const result = await submitBuzz(activeSession.token, activeSession.classroomCode!, questionId);
       if (result.accepted) {
         setLocallyWonQuestionIds((current) => ({ ...current, [interactionKey]: true }));
+        if (result.answerDeadlineAt) {
+          setLocalDeadlineByInteractionKey((current) => ({
+            ...current,
+            [interactionKey]: result.answerDeadlineAt
+          }));
+        }
       }
       setNoticeByQuestionId((current) => ({
         ...current,
@@ -199,6 +266,7 @@ export function StudentPlayPage() {
         delete next[interactionKey];
         return next;
       });
+      setLocalDeadlineByInteractionKey((current) => removeInteractionEntry(current, interactionKey));
       setNoticeByQuestionId((current) => ({
         ...current,
         [questionId]: "已取消鎖定，所有人重新獲得競爭權。"
@@ -231,7 +299,9 @@ export function StudentPlayPage() {
               const roundId = String(question.roundId ?? "0");
               const interactionKey = buzzInteractionKey(questionId, roundId);
               const state = String(question.state);
-              const winnerUserId = buzzWinnerByQuestionId[questionId] ?? "";
+              const winner = buzzWinnerByQuestionId[questionId];
+              const wonLocally = locallyWonQuestionIds[interactionKey] === true;
+              const winnerUserId = winner?.userId ?? (wonLocally ? currentUserId : "");
               const isWinner = locallyWonQuestionIds[interactionKey] === true
                 || (winnerUserId !== "" && winnerUserId === currentUserId);
               const isLoser = winnerUserId !== "" && winnerUserId !== currentUserId;
@@ -239,8 +309,14 @@ export function StudentPlayPage() {
               const canAnswer = isWinner || state === "ANSWER_OPEN";
               const currentAnswers = currentAnswersByQuestionId[questionId] ?? [];
               const hasSubmitted = submittedQuestionIds.includes(interactionKey)
-                || currentAnswers.some((submission) => submission.userId === currentUserId);
+                || currentAnswers.some((submission) => submission.isOwnSubmission);
               const isSubmitting = submittingQuestionIds.includes(interactionKey);
+              const countdownSeconds = isWinner && !hasSubmitted
+                ? remainingAnswerSeconds(
+                    localDeadlineByInteractionKey[interactionKey] ?? winner?.answerDeadlineAt,
+                    countdownNowMs
+                  )
+                : null;
               const packageAnswers = answersByQuestionId[interactionKey] ?? {};
               const items = (question.items ?? []) as QuestionItemView[];
 
@@ -254,14 +330,14 @@ export function StudentPlayPage() {
                     {formatQuestionState(state)}
                   </span>
                   {winnerUserId ? <p className="muted">目前搶答成功者：{winnerUserId}</p> : null}
+                  {countdownSeconds !== null ? (
+                    <p className={`answer-countdown ${countdownSeconds === 0 ? "answer-countdown-expired" : ""}`} role="timer">
+                      {countdownSeconds > 0
+                        ? `剩餘 ${countdownSeconds} 秒`
+                        : "時間到"}
+                    </p>
+                  ) : null}
                   {noticeByQuestionId[questionId] ? <p className="notice">{noticeByQuestionId[questionId]}</p> : null}
-                  {currentAnswers.map((submission) => (
-                    <div key={submission.submissionId} className="submitted-answer">
-                      <strong>{submission.displayName}</strong>
-                      <span>提交答案：{formatPackageAnswer(submission.answer, items)}</span>
-                      <span className="pill pill-won">✓ 已作答</span>
-                    </div>
-                  ))}
                   {state === "BUZZ_OPEN" ? (
                     <>
                       <button

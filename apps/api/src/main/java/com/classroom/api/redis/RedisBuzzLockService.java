@@ -23,6 +23,11 @@ public final class RedisBuzzLockService {
     return "OK".equals(response);
   }
 
+  public boolean tryLock(String key, String value) {
+    String response = send("SET", key, value, "NX");
+    return "OK".equals(response);
+  }
+
   public long nextSequence(String key) {
     String response = send("INCR", key);
     return Long.parseLong(response);
@@ -30,6 +35,12 @@ public final class RedisBuzzLockService {
 
   public void delete(String key) {
     send("DEL", key);
+  }
+
+  public boolean deleteIfValue(String key, String expectedValue) {
+    String script = "if redis.call('GET', KEYS[1]) == ARGV[1] then "
+        + "return redis.call('DEL', KEYS[1]) else return 0 end";
+    return "1".equals(send("EVAL", script, "1", key, expectedValue));
   }
 
   private String send(String... args) {

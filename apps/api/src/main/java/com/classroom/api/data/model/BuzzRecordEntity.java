@@ -12,6 +12,7 @@ public record BuzzRecordEntity(
     long receiptOrder,
     Instant receivedAt,
     String outcomeStatus,
-    boolean successful
+    boolean successful,
+    Instant answerDeadlineAt
 ) {
 }

@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS buzz_records (
   successful BOOLEAN NOT NULL DEFAULT FALSE,
   round_number INTEGER NOT NULL DEFAULT 0,
   active BOOLEAN NOT NULL DEFAULT TRUE,
+  answer_deadline_at TIMESTAMPTZ NULL,
   UNIQUE (question_id, request_id)
 );
 
@@ -127,6 +128,7 @@ CREATE TABLE IF NOT EXISTS question_buzz_rounds (
 
 ALTER TABLE buzz_records ADD COLUMN IF NOT EXISTS round_number INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE buzz_records ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE buzz_records ADD COLUMN IF NOT EXISTS answer_deadline_at TIMESTAMPTZ NULL;
 ALTER TABLE submissions ADD COLUMN IF NOT EXISTS round_number INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE questions ALTER COLUMN state SET DEFAULT 'READY';
 
@@ -181,6 +183,10 @@ DROP INDEX IF EXISTS idx_buzz_records_single_winner;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_buzz_records_single_active_winner
   ON buzz_records (question_id, round_number)
   WHERE successful = TRUE AND active = TRUE;
+
+CREATE INDEX IF NOT EXISTS idx_buzz_records_overdue_active_winner
+  ON buzz_records (answer_deadline_at, question_id, round_number)
+  WHERE successful = TRUE AND active = TRUE AND answer_deadline_at IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_submissions_lookup
   ON submissions (question_id, user_id, submitted_at DESC);

@@ -6,13 +6,112 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $repoRoot = Split-Path -Parent $projectRoot
 $apiProcess = $null
 
+function Get-QuestionView {
+  param(
+    [string]$Token,
+    [string]$ClassroomCode,
+    [string]$QuestionId
+  )
+
+  $response = Invoke-ApiJson -Method "GET" -Path "/api/questions?classroomCode=$ClassroomCode" -Token $Token -Body $null
+  Assert-True ($response.StatusCode -eq 200) "Unable to load question $QuestionId"
+  return @($response.Body.questions | Where-Object { [string]$_.id -eq $QuestionId })[0]
+}
+
+function Wait-ForQuestionBuzzStatus {
+  param(
+    [string]$Token,
+    [string]$ClassroomCode,
+    [string]$QuestionId,
+    [string]$ExpectedStatus,
+    [int]$TimeoutSeconds = 10
+  )
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  do {
+    $question = Get-QuestionView -Token $Token -ClassroomCode $ClassroomCode -QuestionId $QuestionId
+    if ([string]$question.buzzStatus -eq $ExpectedStatus) {
+      return $question
+    }
+    Start-Sleep -Milliseconds 100
+  } while ((Get-Date) -lt $deadline)
+
+  throw "Question $QuestionId did not reach buzz status $ExpectedStatus within $TimeoutSeconds seconds"
+}
+
+function Get-TimeoutEvents {
+  param(
+    [string]$Token,
+    [string]$ClassroomCode,
+    [string]$QuestionId
+  )
+
+  $response = Invoke-ApiJson -Method "GET" -Path "/api/realtime/events?classroomCode=$ClassroomCode&since=0" -Token $Token -Body $null
+  Assert-True ($response.StatusCode -eq 200) "Unable to load realtime events for $QuestionId"
+  return @($response.Body.events | Where-Object {
+    [string]$_.type -eq "BUZZ_CANCELLED" `
+      -and [string]$_.payload.reason -eq "TIMEOUT" `
+      -and ([string]$_.payload.packageId -eq $QuestionId -or [string]$_.payload.questionId -eq $QuestionId)
+  })
+}
+
+function Wait-ForSingleTimeoutEvent {
+  param(
+    [string]$Token,
+    [string]$ClassroomCode,
+    [string]$QuestionId,
+    [int]$TimeoutSeconds = 10
+  )
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  do {
+    $events = @(Get-TimeoutEvents -Token $Token -ClassroomCode $ClassroomCode -QuestionId $QuestionId)
+    if ($events.Count -eq 1) {
+      return $events[0]
+    }
+    if ($events.Count -gt 1) {
+      throw "Question $QuestionId published duplicate timeout events"
+    }
+    Start-Sleep -Milliseconds 100
+  } while ((Get-Date) -lt $deadline)
+
+  throw "Question $QuestionId did not publish a timeout event within $TimeoutSeconds seconds"
+}
+
 try {
   & (Join-Path $PSScriptRoot "build.ps1")
   Start-ComposeInfra -RepoRoot $repoRoot
   Wait-ForInfra -RepoRoot $repoRoot
+
+  $testSourceRoot = Join-Path $projectRoot "src\test\java"
+  $testSources = @(Get-ChildItem -Path $testSourceRoot -Recurse -Filter *.java | ForEach-Object { $_.FullName })
+  if ($testSources.Count -gt 0) {
+    $mainSourceRoot = Join-Path $projectRoot "src\main\java"
+    $mainSources = @(Get-ChildItem -Path $mainSourceRoot -Recurse -Filter *.java | ForEach-Object { $_.FullName })
+    $testClassRoot = Join-Path $env:TEMP "classroom-api\test-classes"
+    if (Test-Path -LiteralPath $testClassRoot) {
+      Remove-Item -Recurse -Force -LiteralPath $testClassRoot
+    }
+    New-Item -ItemType Directory -Path $testClassRoot -Force | Out-Null
+    $allTestSources = @($mainSources + $testSources)
+    javac -encoding UTF-8 -d $testClassRoot $allTestSources
+    if ($LASTEXITCODE -ne 0) {
+      throw "API test compilation failed with exit code $LASTEXITCODE"
+    }
+    $testClassPath = "$testClassRoot;$(Get-DriverJar)"
+    java -cp $testClassPath com.classroom.api.buzz.BuzzDeadlineServiceTest
+    if ($LASTEXITCODE -ne 0) {
+      throw "Buzz deadline service tests failed with exit code $LASTEXITCODE"
+    }
+    java -cp $testClassPath com.classroom.api.question.QuestionPackageControllerTest
+    if ($LASTEXITCODE -ne 0) {
+      throw "Question package answer-limit validation tests failed with exit code $LASTEXITCODE"
+    }
+  }
+
   $apiProcess = Start-ApiProcess -ProjectRoot $projectRoot
   Wait-ForApi
-  Wait-ForPort -HostName "127.0.0.1" -Port 8081
+  Wait-ForPort -HostName "127.0.0.1" -Port $script:ApiTestWebSocketPort
 
   $teacherToken = New-Token -DisplayName "Teacher QA" -Role "TEACHER" -UserId "teacher-qa"
   $studentOneToken = New-Token -DisplayName "Student One" -Role "STUDENT" -UserId "student-one"
@@ -40,6 +139,40 @@ try {
   Assert-True ($sheetConfigResponse.StatusCode -eq 201) "Sheet configuration creation failed"
   $sheetConfigId = [string]$sheetConfigResponse.Body.config.id
 
+  $invalidAnswerTimeLimits = @(
+    [pscustomobject]@{ Name = "zero"; Value = 0 },
+    [pscustomobject]@{ Name = "negative"; Value = -1 },
+    [pscustomobject]@{ Name = "fractional"; Value = 1.5 },
+    [pscustomobject]@{ Name = "malformed"; Value = "abc" },
+    [pscustomobject]@{ Name = "blank"; Value = "" },
+    [pscustomobject]@{ Name = "null"; Value = $null }
+  )
+  foreach ($invalidLimit in $invalidAnswerTimeLimits) {
+    $invalidQuestionLimit = Invoke-ApiJson -Method "POST" -Path "/api/questions" -Token $teacherToken -Body @{
+      classroomCode = $classroomCode
+      prompt = "Invalid question limit $($invalidLimit.Name)"
+      type = "BUZZ"
+      score = 0
+      answerKey = "buzz"
+      publicationSettings = (@{ showAnswer = $false; sheetConfigId = $sheetConfigId; targetCell = "Z1" } | ConvertTo-Json -Compress)
+      answerTimeLimitSeconds = $invalidLimit.Value
+    }
+    Assert-True ($invalidQuestionLimit.StatusCode -eq 400) "Question API accepted $($invalidLimit.Name) answerTimeLimitSeconds"
+
+    $invalidPackageLimit = Invoke-ApiJson -Method "POST" -Path "/api/question-packages" -Token $teacherToken -Body @{
+      classroomCode = $classroomCode
+      title = "Invalid package limit $($invalidLimit.Name)"
+      sheetConfigId = $sheetConfigId
+      items = @(@{ prompt = "Invalid limit"; targetCell = "Z2" })
+      score = 0
+      answerTimeLimitSeconds = $invalidLimit.Value
+    }
+    Assert-True ($invalidPackageLimit.StatusCode -eq 400) "Package API accepted $($invalidLimit.Name) answerTimeLimitSeconds"
+  }
+  $questionsAfterInvalidLimits = Invoke-ApiJson -Method "GET" -Path "/api/questions?classroomCode=$classroomCode" -Token $teacherToken -Body $null
+  Assert-True ($questionsAfterInvalidLimits.StatusCode -eq 200) "Question list failed after invalid limit validation"
+  Assert-True (@($questionsAfterInvalidLimits.Body.questions).Count -eq 0) "Invalid answer time limit persisted a question or package"
+
   $questionResponse = Invoke-ApiJson -Method "POST" -Path "/api/questions" -Token $teacherToken -Body @{
     classroomCode = $classroomCode
     prompt = "Choose A"
@@ -52,6 +185,44 @@ try {
   Assert-True ($questionResponse.StatusCode -eq 201) "Question creation failed: status=$($questionResponse.StatusCode) body=$($questionResponse.Body | ConvertTo-Json -Compress)"
   Assert-True ([string]$questionResponse.Body.question.state -eq "READY") "New question was not created in READY"
   $questionId = [string]$questionResponse.Body.question.id
+
+  foreach ($invalidLimit in $invalidAnswerTimeLimits) {
+    $invalidLimitUpdate = Invoke-ApiJson -Method "PUT" -Path "/api/questions" -Token $teacherToken -Body @{
+      classroomCode = $classroomCode
+      questionId = $questionId
+      answerTimeLimitSeconds = $invalidLimit.Value
+    }
+    Assert-True ($invalidLimitUpdate.StatusCode -eq 400) "Question update accepted $($invalidLimit.Name) answerTimeLimitSeconds"
+  }
+  $questionAfterInvalidLimits = Get-QuestionView -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $questionId
+  Assert-True ([string]$questionAfterInvalidLimits.answerTimeLimitSeconds -eq "30") "Invalid limit update changed the stored answer time limit"
+
+  Push-Location $repoRoot
+  try {
+    Invoke-TestCompose -ComposeArguments @(
+      "exec", "-T", "postgres", "psql", "-U", "classroom", "-d", "classroom",
+      "-v", "ON_ERROR_STOP=1", "-c",
+      "UPDATE questions SET answer_time_limit_seconds = 0 WHERE id = '$questionId'::uuid;"
+    ) | Out-Null
+  }
+  finally {
+    Pop-Location
+  }
+  $legacyLimitQuestion = Get-QuestionView -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $questionId
+  Assert-True ([string]$legacyLimitQuestion.answerTimeLimitSeconds -eq "0") "Legacy non-positive answer limit was not readable"
+  $legacyPreservingUpdate = Invoke-ApiJson -Method "PUT" -Path "/api/questions" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $questionId
+    score = 10
+  }
+  Assert-True ($legacyPreservingUpdate.StatusCode -eq 200) "Update without an answer limit rejected a readable legacy value"
+  Assert-True ([string]$legacyPreservingUpdate.Body.question.answerTimeLimitSeconds -eq "0") "Update without an answer limit changed a legacy value"
+  $restorePositiveLimit = Invoke-ApiJson -Method "PUT" -Path "/api/questions" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $questionId
+    answerTimeLimitSeconds = 30
+  }
+  Assert-True ($restorePositiveLimit.StatusCode -eq 200) "Positive answer time limit update failed"
 
   $invalidTransition = Invoke-ApiJson -Method "POST" -Path "/api/questions/state" -Token $teacherToken -Body @{
     classroomCode = $classroomCode
@@ -254,16 +425,16 @@ try {
 
   $buzzJobs = foreach ($token in $buzzTokens) {
     Start-Job -ScriptBlock {
-      param($activeToken, $activeClassroomCode, $activeQuestionId)
+      param($activeToken, $activeClassroomCode, $activeQuestionId, $activeApiPort)
       $headers = @{ Authorization = "Bearer $activeToken" }
       $body = @{ classroomCode = $activeClassroomCode; questionId = $activeQuestionId; requestId = [guid]::NewGuid().ToString() } | ConvertTo-Json -Compress
       try {
-        $response = Invoke-WebRequest -Uri "http://localhost:8080/api/buzz" -Method POST -Headers $headers -Body $body -ContentType "application/json" -UseBasicParsing -TimeoutSec 10
+        $response = Invoke-WebRequest -Uri "http://localhost:$activeApiPort/api/buzz" -Method POST -Headers $headers -Body $body -ContentType "application/json" -UseBasicParsing -TimeoutSec 10
         return $response.Content | ConvertFrom-Json
       } catch {
         return [pscustomobject]@{ accepted = $false; outcomeStatus = "ERROR" }
       }
-    } -ArgumentList $token, $classroomCode, $buzzQuestionId
+    } -ArgumentList $token, $classroomCode, $buzzQuestionId, $script:ApiTestPort
   }
 
   $completedBuzzJobs = @($buzzJobs | Wait-Job -Timeout 20)
@@ -359,6 +530,249 @@ try {
   $roundQuestionView = @($teacherQuestions.Body.questions | Where-Object { [string]$_.id -eq $roundQuestionId })[0]
   Assert-True ([string]$roundQuestionView.buzzStatus -eq "SUBMITTED_PENDING_REVIEW") "Teacher current-round status did not recover submitted state"
   Assert-True (-not [string]::IsNullOrWhiteSpace([string]$roundQuestionView.winnerDisplayName)) "Teacher current-round status omitted winner display name"
+
+  $timedLegacyQuestion = Invoke-ApiJson -Method "POST" -Path "/api/questions" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode
+    prompt = "Timed legacy route"
+    type = "BUZZ"
+    score = 0
+    answerKey = "timed"
+    publicationSettings = (@{ showAnswer = $false; sheetConfigId = $sheetConfigId; targetCell = "T1" } | ConvertTo-Json -Compress)
+    answerTimeLimitSeconds = 1
+  }
+  Assert-True ($timedLegacyQuestion.StatusCode -eq 201) "Timed legacy question creation failed"
+  $timedLegacyQuestionId = [string]$timedLegacyQuestion.Body.question.id
+  $timedLegacyOpen = Invoke-ApiJson -Method "POST" -Path "/api/questions/state" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $timedLegacyQuestionId
+    targetState = "BUZZ_OPEN"
+  }
+  Assert-True ($timedLegacyOpen.StatusCode -eq 200) "Timed legacy question did not open"
+  $timedLegacyBuzz = Invoke-ApiJson -Method "POST" -Path "/api/buzz" -Token $studentOneToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $timedLegacyQuestionId
+    requestId = [guid]::NewGuid().ToString()
+  }
+  Assert-True ($timedLegacyBuzz.StatusCode -eq 200 -and $timedLegacyBuzz.Body.accepted) "Timed legacy winner was not accepted"
+  $timedLegacyWinnerView = Get-QuestionView -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $timedLegacyQuestionId
+  $timedLegacyRound = [string]$timedLegacyWinnerView.roundId
+  Assert-True ([string]$timedLegacyWinnerView.buzzStatus -eq "WINNER_ANSWERING") "Timed legacy winner was not visible"
+
+  $timedLegacyExpiredView = Wait-ForQuestionBuzzStatus -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $timedLegacyQuestionId -ExpectedStatus "WAITING_FOR_BUZZ"
+  Assert-True ([string]$timedLegacyExpiredView.state -eq "BUZZ_OPEN") "Timeout changed the legacy question lifecycle state"
+  Assert-True ([string]$timedLegacyExpiredView.roundId -eq $timedLegacyRound) "Timeout advanced the legacy question round"
+  $timedLegacyTimeoutEvent = Wait-ForSingleTimeoutEvent -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $timedLegacyQuestionId
+  Assert-True ([string]$timedLegacyTimeoutEvent.payload.roundId -eq $timedLegacyRound) "Legacy timeout event used the wrong round"
+  Assert-True (-not [string]::IsNullOrWhiteSpace([string]$timedLegacyTimeoutEvent.payload.answerDeadlineAt)) "Legacy timeout event omitted its deadline"
+  $timedLegacyHistory = Invoke-ApiJson -Method "GET" -Path "/api/buzz/history?classroomCode=$classroomCode&questionId=$timedLegacyQuestionId" -Token $teacherToken -Body $null
+  Assert-True ($timedLegacyHistory.StatusCode -eq 200) "Timed legacy buzz history could not be loaded"
+  Assert-True (@($timedLegacyHistory.Body.history | Where-Object { [string]$_.outcomeStatus -eq "TIMED_OUT" }).Count -eq 1) "Legacy timeout history was not recorded exactly once"
+
+  $lateLegacySubmission = Invoke-ApiJson -Method "POST" -Path "/api/submissions" -Token $studentOneToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $timedLegacyQuestionId
+    answer = "too late"
+  }
+  Assert-True ($lateLegacySubmission.StatusCode -eq 400) "Late legacy submission was not rejected as expired"
+  $lateLegacyAnswers = Invoke-ApiJson -Method "GET" -Path "/api/submissions?classroomCode=$classroomCode&questionId=$timedLegacyQuestionId" -Token $teacherToken -Body $null
+  Assert-True ($lateLegacyAnswers.StatusCode -eq 200 -and @($lateLegacyAnswers.Body.answers).Count -eq 0) "Late legacy answer was persisted"
+  Start-Sleep -Milliseconds 1200
+  Assert-True (@(Get-TimeoutEvents -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $timedLegacyQuestionId).Count -eq 1) "Repeated sweeps duplicated the legacy timeout event"
+
+  $timedLegacyReplacementBuzz = Invoke-ApiJson -Method "POST" -Path "/api/buzz" -Token $studentTwoToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $timedLegacyQuestionId
+    requestId = [guid]::NewGuid().ToString()
+  }
+  Assert-True ($timedLegacyReplacementBuzz.StatusCode -eq 200 -and $timedLegacyReplacementBuzz.Body.accepted) "Another student could not rebuzz the timed-out legacy question"
+  $timedLegacyReplacementView = Get-QuestionView -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $timedLegacyQuestionId
+  Assert-True ([string]$timedLegacyReplacementView.roundId -eq $timedLegacyRound) "Replacement legacy winner was not in the same round"
+  $timedLegacyOnTimeSubmission = Invoke-ApiJson -Method "POST" -Path "/api/submissions" -Token $studentTwoToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $timedLegacyQuestionId
+    answer = "on time"
+  }
+  Assert-True ($timedLegacyOnTimeSubmission.StatusCode -eq 200) "On-time replacement legacy submission failed"
+  Start-Sleep -Milliseconds 1500
+  $timedLegacySubmittedView = Get-QuestionView -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $timedLegacyQuestionId
+  Assert-True ([string]$timedLegacySubmittedView.buzzStatus -eq "SUBMITTED_PENDING_REVIEW") "On-time legacy submission was expired later"
+  Assert-True (@(Get-TimeoutEvents -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $timedLegacyQuestionId).Count -eq 1) "On-time replacement created an extra timeout event"
+
+  $timedPackage = Invoke-ApiJson -Method "POST" -Path "/api/question-packages" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode
+    title = "Timed package route"
+    sheetConfigId = $sheetConfigId
+    items = @(
+      @{ prompt = "Timed package one"; targetCell = "T2" },
+      @{ prompt = "Timed package two"; targetCell = "T3" }
+    )
+    score = 0
+    answerTimeLimitSeconds = 1
+  }
+  Assert-True ($timedPackage.StatusCode -eq 201) "Timed package creation failed"
+  $timedPackageId = [string]$timedPackage.Body.package.packageId
+  $timedPackageItems = @($timedPackage.Body.package.items)
+  $timedPackageOpen = Invoke-ApiJson -Method "POST" -Path "/api/questions/state" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $timedPackageId
+    targetState = "BUZZ_OPEN"
+  }
+  Assert-True ($timedPackageOpen.StatusCode -eq 200) "Timed package did not open"
+  $timedPackageBuzz = Invoke-ApiJson -Method "POST" -Path "/api/buzz" -Token $studentOneToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $timedPackageId
+    requestId = [guid]::NewGuid().ToString()
+  }
+  Assert-True ($timedPackageBuzz.StatusCode -eq 200 -and $timedPackageBuzz.Body.accepted) "Timed package winner was not accepted"
+  $timedPackageWinnerView = Get-QuestionView -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $timedPackageId
+  $timedPackageRound = [string]$timedPackageWinnerView.roundId
+  $timedPackageExpiredView = Wait-ForQuestionBuzzStatus -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $timedPackageId -ExpectedStatus "WAITING_FOR_BUZZ"
+  Assert-True ([string]$timedPackageExpiredView.state -eq "BUZZ_OPEN") "Timeout changed the package lifecycle state"
+  Assert-True ([string]$timedPackageExpiredView.roundId -eq $timedPackageRound) "Timeout advanced the package round"
+  [void](Wait-ForSingleTimeoutEvent -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $timedPackageId)
+
+  $latePackageSubmission = Invoke-ApiJson -Method "POST" -Path "/api/question-packages/answers" -Token $studentOneToken -Body @{
+    classroomCode = $classroomCode
+    packageId = $timedPackageId
+    answers = @(
+      @{ itemId = [string]$timedPackageItems[0].id; answer = "too late one" },
+      @{ itemId = [string]$timedPackageItems[1].id; answer = "too late two" }
+    )
+  }
+  Assert-True ($latePackageSubmission.StatusCode -eq 400) "Late package submission was not rejected as expired"
+  $latePackageAnswers = Invoke-ApiJson -Method "GET" -Path "/api/submissions?classroomCode=$classroomCode&questionId=$timedPackageId" -Token $teacherToken -Body $null
+  Assert-True ($latePackageAnswers.StatusCode -eq 200 -and @($latePackageAnswers.Body.answers).Count -eq 0) "Late package answer was persisted"
+  $timedPackageReplacementBuzz = Invoke-ApiJson -Method "POST" -Path "/api/buzz" -Token $studentTwoToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $timedPackageId
+    requestId = [guid]::NewGuid().ToString()
+  }
+  Assert-True ($timedPackageReplacementBuzz.StatusCode -eq 200 -and $timedPackageReplacementBuzz.Body.accepted) "Another student could not rebuzz the timed-out package"
+  $timedPackageReplacementView = Get-QuestionView -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $timedPackageId
+  Assert-True ([string]$timedPackageReplacementView.roundId -eq $timedPackageRound) "Replacement package winner was not in the same round"
+  $timedPackageOnTimeSubmission = Invoke-ApiJson -Method "POST" -Path "/api/question-packages/answers" -Token $studentTwoToken -Body @{
+    classroomCode = $classroomCode
+    packageId = $timedPackageId
+    answers = @(
+      @{ itemId = [string]$timedPackageItems[0].id; answer = "on time one" },
+      @{ itemId = [string]$timedPackageItems[1].id; answer = "on time two" }
+    )
+  }
+  Assert-True ($timedPackageOnTimeSubmission.StatusCode -eq 200) "On-time replacement package submission failed"
+  Start-Sleep -Milliseconds 1500
+  $timedPackageSubmittedView = Get-QuestionView -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $timedPackageId
+  Assert-True ([string]$timedPackageSubmittedView.buzzStatus -eq "SUBMITTED_PENDING_REVIEW") "On-time package submission was expired later"
+  Assert-True (@(Get-TimeoutEvents -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $timedPackageId).Count -eq 1) "On-time package replacement created an extra timeout event"
+
+  $boundaryQuestion = Invoke-ApiJson -Method "POST" -Path "/api/questions" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode
+    prompt = "Submit timeout boundary"
+    type = "BUZZ"
+    score = 0
+    answerKey = "boundary"
+    publicationSettings = (@{ showAnswer = $false; sheetConfigId = $sheetConfigId; targetCell = "T4" } | ConvertTo-Json -Compress)
+    answerTimeLimitSeconds = 1
+  }
+  Assert-True ($boundaryQuestion.StatusCode -eq 201) "Boundary question creation failed"
+  $boundaryQuestionId = [string]$boundaryQuestion.Body.question.id
+  $boundaryOpen = Invoke-ApiJson -Method "POST" -Path "/api/questions/state" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $boundaryQuestionId
+    targetState = "BUZZ_OPEN"
+  }
+  Assert-True ($boundaryOpen.StatusCode -eq 200) "Boundary question did not open"
+  $boundaryBuzz = Invoke-ApiJson -Method "POST" -Path "/api/buzz" -Token $studentOneToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $boundaryQuestionId
+    requestId = [guid]::NewGuid().ToString()
+  }
+  Assert-True ($boundaryBuzz.StatusCode -eq 200 -and $boundaryBuzz.Body.accepted) "Boundary winner was not accepted"
+  $boundarySubmitJob = Start-Job -ScriptBlock {
+    param($Token, $ClassroomCode, $QuestionId, $ApiPort)
+    Start-Sleep -Milliseconds 900
+    $headers = @{ Authorization = "Bearer $Token" }
+    $body = @{ classroomCode = $ClassroomCode; questionId = $QuestionId; answer = "boundary" } | ConvertTo-Json -Compress
+    try {
+      $response = Invoke-WebRequest -Uri "http://localhost:$ApiPort/api/submissions" -Method POST -Headers $headers -Body $body -ContentType "application/json" -UseBasicParsing -TimeoutSec 10
+      return [pscustomobject]@{ StatusCode = [int]$response.StatusCode }
+    }
+    catch {
+      return [pscustomobject]@{ StatusCode = [int]$_.Exception.Response.StatusCode }
+    }
+  } -ArgumentList $studentOneToken, $classroomCode, $boundaryQuestionId, $script:ApiTestPort
+  $boundarySubmitResult = $boundarySubmitJob | Receive-Job -Wait -AutoRemoveJob
+  Assert-True (@(200, 400) -contains [int]$boundarySubmitResult.StatusCode) "Boundary submission produced an invalid race outcome"
+  Start-Sleep -Milliseconds 1500
+  $boundaryView = Get-QuestionView -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $boundaryQuestionId
+  $boundaryTimeoutEvents = @(Get-TimeoutEvents -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $boundaryQuestionId)
+  if ([int]$boundarySubmitResult.StatusCode -eq 200) {
+    Assert-True ([string]$boundaryView.buzzStatus -eq "SUBMITTED_PENDING_REVIEW") "Accepted boundary submission was later expired"
+    Assert-True ($boundaryTimeoutEvents.Count -eq 0) "Accepted boundary submission also committed a timeout"
+  }
+  else {
+    Assert-True ([string]$boundaryView.buzzStatus -eq "WAITING_FOR_BUZZ") "Expired boundary winner remained active"
+    Assert-True ($boundaryTimeoutEvents.Count -eq 1) "Expired boundary winner did not publish exactly one timeout"
+    $boundaryReplacementBuzz = Invoke-ApiJson -Method "POST" -Path "/api/buzz" -Token $studentTwoToken -Body @{
+      classroomCode = $classroomCode
+      questionId = $boundaryQuestionId
+      requestId = [guid]::NewGuid().ToString()
+    }
+    Assert-True ($boundaryReplacementBuzz.StatusCode -eq 200 -and $boundaryReplacementBuzz.Body.accepted) "Boundary timeout left the question stuck"
+    $boundaryReplacementSubmission = Invoke-ApiJson -Method "POST" -Path "/api/submissions" -Token $studentTwoToken -Body @{
+      classroomCode = $classroomCode
+      questionId = $boundaryQuestionId
+      answer = "replacement"
+    }
+    Assert-True ($boundaryReplacementSubmission.StatusCode -eq 200) "Boundary replacement could not submit"
+  }
+
+  $restartQuestion = Invoke-ApiJson -Method "POST" -Path "/api/questions" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode
+    prompt = "Restart timeout recovery"
+    type = "BUZZ"
+    score = 0
+    answerKey = "restart"
+    publicationSettings = (@{ showAnswer = $false; sheetConfigId = $sheetConfigId; targetCell = "T5" } | ConvertTo-Json -Compress)
+    answerTimeLimitSeconds = 1
+  }
+  Assert-True ($restartQuestion.StatusCode -eq 201) "Restart recovery question creation failed"
+  $restartQuestionId = [string]$restartQuestion.Body.question.id
+  $restartOpen = Invoke-ApiJson -Method "POST" -Path "/api/questions/state" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $restartQuestionId
+    targetState = "BUZZ_OPEN"
+  }
+  Assert-True ($restartOpen.StatusCode -eq 200) "Restart recovery question did not open"
+  $restartBuzz = Invoke-ApiJson -Method "POST" -Path "/api/buzz" -Token $studentOneToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $restartQuestionId
+    requestId = [guid]::NewGuid().ToString()
+  }
+  Assert-True ($restartBuzz.StatusCode -eq 200 -and $restartBuzz.Body.accepted) "Restart recovery winner was not accepted"
+  $restartRound = [string](Get-QuestionView -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $restartQuestionId).roundId
+  Stop-ApiProcess -Process $apiProcess
+  $apiProcess = $null
+  Start-Sleep -Milliseconds 1500
+  $apiProcess = Start-ApiProcess -ProjectRoot $projectRoot
+  Wait-ForApi
+  Wait-ForPort -HostName "127.0.0.1" -Port $script:ApiTestWebSocketPort
+  $restartExpiredView = Get-QuestionView -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $restartQuestionId
+  Assert-True ([string]$restartExpiredView.buzzStatus -eq "WAITING_FOR_BUZZ") "Startup recovery did not expire the overdue winner before traffic"
+  Assert-True ([string]$restartExpiredView.state -eq "BUZZ_OPEN") "Startup recovery changed the question lifecycle state"
+  Assert-True ([string]$restartExpiredView.roundId -eq $restartRound) "Startup recovery advanced the question round"
+  [void](Wait-ForSingleTimeoutEvent -Token $teacherToken -ClassroomCode $classroomCode -QuestionId $restartQuestionId)
+  $restartReplacementBuzz = Invoke-ApiJson -Method "POST" -Path "/api/buzz" -Token $studentTwoToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $restartQuestionId
+    requestId = [guid]::NewGuid().ToString()
+  }
+  Assert-True ($restartReplacementBuzz.StatusCode -eq 200 -and $restartReplacementBuzz.Body.accepted) "Startup-recovered question did not accept a replacement winner"
+  $restartReplacementSubmission = Invoke-ApiJson -Method "POST" -Path "/api/submissions" -Token $studentTwoToken -Body @{
+    classroomCode = $classroomCode
+    questionId = $restartQuestionId
+    answer = "recovered"
+  }
+  Assert-True ($restartReplacementSubmission.StatusCode -eq 200) "Startup-recovered replacement could not submit"
 
   $unauthorizedBatch = Invoke-ApiJson -Method "POST" -Path "/api/questions/batch" -Token $studentOneToken -Body @{
     classroomCode = $classroomCode

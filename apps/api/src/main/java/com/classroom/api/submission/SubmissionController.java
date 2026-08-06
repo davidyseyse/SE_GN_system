@@ -2,6 +2,7 @@ package com.classroom.api.submission;
 
 import com.classroom.api.auth.AuthContext;
 import com.classroom.api.auth.AuthorizationGuard;
+import com.classroom.api.buzz.BuzzDeadlineService;
 import com.classroom.api.contract.QuestionState;
 import com.classroom.api.contract.QuestionType;
 import com.classroom.api.contract.Role;
@@ -11,8 +12,6 @@ import com.classroom.api.data.model.ScoreRecordEntity;
 import com.classroom.api.data.model.SheetConfigEntity;
 import com.classroom.api.data.model.SubmissionEntity;
 import com.classroom.api.data.model.UserEntity;
-import com.classroom.api.data.model.BuzzRecordEntity;
-import com.classroom.api.data.repository.BuzzRepository;
 import com.classroom.api.data.repository.BuzzRoundRepository;
 import com.classroom.api.data.repository.ClassroomRepository;
 import com.classroom.api.data.repository.QuestionRepository;
@@ -41,10 +40,10 @@ public final class SubmissionController {
   private final ScoreRepository scoreRepository;
   private final SheetConfigRepository sheetConfigRepository;
   private final UserRepository userRepository;
-  private final BuzzRepository buzzRepository;
   private final RealtimeEventBroker eventBroker;
   private final GoogleSheetsSyncService googleSheetsSyncService;
   private final BuzzRoundRepository buzzRoundRepository;
+  private final BuzzDeadlineService buzzDeadlineService;
 
   public SubmissionController(
       AuthorizationGuard authorizationGuard,
@@ -54,10 +53,10 @@ public final class SubmissionController {
       ScoreRepository scoreRepository,
       SheetConfigRepository sheetConfigRepository,
       UserRepository userRepository,
-      BuzzRepository buzzRepository,
       RealtimeEventBroker eventBroker,
       GoogleSheetsSyncService googleSheetsSyncService,
-      BuzzRoundRepository buzzRoundRepository
+      BuzzRoundRepository buzzRoundRepository,
+      BuzzDeadlineService buzzDeadlineService
   ) {
     this.authorizationGuard = authorizationGuard;
     this.classroomRepository = classroomRepository;
@@ -66,10 +65,10 @@ public final class SubmissionController {
     this.scoreRepository = scoreRepository;
     this.sheetConfigRepository = sheetConfigRepository;
     this.userRepository = userRepository;
-    this.buzzRepository = buzzRepository;
     this.eventBroker = eventBroker;
     this.googleSheetsSyncService = googleSheetsSyncService;
     this.buzzRoundRepository = buzzRoundRepository;
+    this.buzzDeadlineService = buzzDeadlineService;
   }
 
   public HttpHandlerFunction submitHandler() {
@@ -86,8 +85,9 @@ public final class SubmissionController {
       UserEntity user = requireUser(authContext.subject());
       int roundNumber = QuestionType.valueOf(question.type()) == QuestionType.BUZZ
           ? buzzRoundRepository.current(question.id()) : 0;
-      assertUserCanSubmit(question, user, state, roundNumber);
-      if (submissionRepository.hasSubmission(question.id(), user.id(), roundNumber)) {
+      boolean winnerSubmission = state == QuestionState.BUZZ_OPEN
+          && QuestionType.valueOf(question.type()) == QuestionType.BUZZ;
+      if (!winnerSubmission && submissionRepository.hasSubmission(question.id(), user.id(), roundNumber)) {
         throw new IllegalArgumentException("Duplicate submission is not allowed");
       }
 
@@ -108,7 +108,11 @@ public final class SubmissionController {
           now,
           decision.reviewStatus() == null ? now : null
       );
-      submissionRepository.save(submission, roundNumber);
+      if (winnerSubmission) {
+        buzzDeadlineService.saveWinnerSubmission(submission, roundNumber);
+      } else {
+        submissionRepository.save(submission, roundNumber);
+      }
       syncSubmissionToSheet(question, user, submission);
 
       if (decision.awardedScore() != null) {
@@ -358,20 +362,6 @@ public final class SubmissionController {
       throw new IllegalArgumentException("User not found");
     }
     return user;
-  }
-
-  private void assertUserCanSubmit(QuestionEntity question, UserEntity user, QuestionState state, int roundNumber) {
-    if (state != QuestionState.BUZZ_OPEN || QuestionType.valueOf(question.type()) != QuestionType.BUZZ) {
-      return;
-    }
-
-    BuzzRecordEntity winner = buzzRepository.findActiveWinner(question.id(), roundNumber);
-    if (winner == null) {
-      throw new IllegalArgumentException("No buzz winner yet");
-    }
-    if (!winner.userId().equals(user.id())) {
-      throw new SecurityException("Only the buzz winner can submit an answer right now");
-    }
   }
 
   private void syncSubmissionToSheet(QuestionEntity question, UserEntity user, SubmissionEntity submission) {

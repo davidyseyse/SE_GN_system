@@ -1,5 +1,48 @@
 $ErrorActionPreference = "Stop"
 
+$script:ApiTestPort = if ([string]::IsNullOrWhiteSpace($env:API_TEST_PORT)) {
+  8080
+} else {
+  [int]$env:API_TEST_PORT
+}
+$script:ApiTestWebSocketPort = if ([string]::IsNullOrWhiteSpace($env:API_TEST_WEBSOCKET_PORT)) {
+  8081
+} else {
+  [int]$env:API_TEST_WEBSOCKET_PORT
+}
+$script:ApiTestPostgresPort = if ([string]::IsNullOrWhiteSpace($env:API_TEST_POSTGRES_PORT)) {
+  5432
+} else {
+  [int]$env:API_TEST_POSTGRES_PORT
+}
+$script:ApiTestRedisPort = if ([string]::IsNullOrWhiteSpace($env:API_TEST_REDIS_PORT)) {
+  6379
+} else {
+  [int]$env:API_TEST_REDIS_PORT
+}
+$script:ApiTestComposeFile = $env:API_TEST_COMPOSE_FILE
+$script:ApiTestComposeProject = $env:API_TEST_COMPOSE_PROJECT
+
+function Invoke-TestCompose {
+  param(
+    [string[]]$ComposeArguments
+  )
+
+  $dockerArguments = @("compose")
+  if (-not [string]::IsNullOrWhiteSpace($script:ApiTestComposeFile)) {
+    $dockerArguments += @("-f", $script:ApiTestComposeFile)
+  }
+  if (-not [string]::IsNullOrWhiteSpace($script:ApiTestComposeProject)) {
+    $dockerArguments += @("-p", $script:ApiTestComposeProject)
+  }
+  $dockerArguments += $ComposeArguments
+  $output = & docker @dockerArguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "docker compose failed with exit code $LASTEXITCODE"
+  }
+  return $output
+}
+
 . (Join-Path $PSScriptRoot "classpath.ps1")
 
 function Start-ComposeInfra {
@@ -9,7 +52,7 @@ function Start-ComposeInfra {
 
   Push-Location $RepoRoot
   try {
-    docker compose up -d postgres redis | Out-Null
+    Invoke-TestCompose -ComposeArguments @("up", "-d", "postgres", "redis") | Out-Null
   }
   finally {
     Pop-Location
@@ -24,8 +67,8 @@ function Wait-ForInfra {
 
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   while ((Get-Date) -lt $deadline) {
-    $postgresReady = Test-TcpPort -HostName "127.0.0.1" -Port 5432
-    $redisReady = Test-TcpPort -HostName "127.0.0.1" -Port 6379
+    $postgresReady = Test-TcpPort -HostName "127.0.0.1" -Port $script:ApiTestPostgresPort
+    $redisReady = Test-TcpPort -HostName "127.0.0.1" -Port $script:ApiTestRedisPort
 
     if ($postgresReady -and $redisReady) {
       return
@@ -66,7 +109,7 @@ function Stop-ComposeInfra {
 
   Push-Location $RepoRoot
   try {
-    docker compose down -v | Out-Null
+    Invoke-TestCompose -ComposeArguments @("down", "-v") | Out-Null
   }
   finally {
     Pop-Location
@@ -113,7 +156,7 @@ function Wait-ForApi {
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   while ((Get-Date) -lt $deadline) {
     try {
-      $response = Invoke-WebRequest -Uri "http://localhost:8080/api/health" -UseBasicParsing -TimeoutSec 3
+      $response = Invoke-WebRequest -Uri "http://localhost:$script:ApiTestPort/api/health" -UseBasicParsing -TimeoutSec 3
       if ($response.StatusCode -eq 200) {
         return
       }
@@ -157,7 +200,7 @@ function Invoke-ApiJson {
   }
 
   $requestParams = @{
-    Uri = "http://localhost:8080$Path"
+    Uri = "http://localhost:$script:ApiTestPort$Path"
     Method = $Method
     Headers = $headers
     UseBasicParsing = $true
@@ -237,7 +280,7 @@ function Query-AuditCount {
 
   Push-Location $RepoRoot
   try {
-    $count = docker compose exec -T postgres psql -U classroom -d classroom -t -A -c "select count(*) from audit_logs where action_type = 'EXPORT_GENERATED';"
+    $count = Invoke-TestCompose -ComposeArguments @("exec", "-T", "postgres", "psql", "-U", "classroom", "-d", "classroom", "-t", "-A", "-c", "select count(*) from audit_logs where action_type = 'EXPORT_GENERATED';")
     return [int]($count.Trim())
   }
   finally {
@@ -253,7 +296,7 @@ function Query-QuestionCountByState {
 
   Push-Location $RepoRoot
   try {
-    $count = docker compose exec -T postgres psql -U classroom -d classroom -t -A -c "select count(*) from questions where state = '$State';"
+    $count = Invoke-TestCompose -ComposeArguments @("exec", "-T", "postgres", "psql", "-U", "classroom", "-d", "classroom", "-t", "-A", "-c", "select count(*) from questions where state = '$State';")
     return [int]$count.Trim()
   }
   finally {
@@ -288,12 +331,12 @@ function Open-RawWebSocket {
   )
 
   $client = New-Object System.Net.Sockets.TcpClient
-  $client.Connect("127.0.0.1", 8081)
+  $client.Connect("127.0.0.1", $script:ApiTestWebSocketPort)
   $stream = $client.GetStream()
   $stream.ReadTimeout = 10000
   $stream.WriteTimeout = 10000
   $key = [Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes([guid]::NewGuid().ToString("N")))
-  $request = "GET /ws?token=$([Uri]::EscapeDataString($Token))&classroomCode=$ClassroomCode&sessionId=$SessionId HTTP/1.1`r`nHost: 127.0.0.1:8081`r`nUpgrade: websocket`r`nConnection: Upgrade`r`nSec-WebSocket-Version: 13`r`nSec-WebSocket-Key: $key`r`n`r`n"
+  $request = "GET /ws?token=$([Uri]::EscapeDataString($Token))&classroomCode=$ClassroomCode&sessionId=$SessionId HTTP/1.1`r`nHost: 127.0.0.1:$script:ApiTestWebSocketPort`r`nUpgrade: websocket`r`nConnection: Upgrade`r`nSec-WebSocket-Version: 13`r`nSec-WebSocket-Key: $key`r`n`r`n"
   $bytes = [System.Text.Encoding]::ASCII.GetBytes($request)
   $stream.Write($bytes, 0, $bytes.Length)
   $stream.Flush()
