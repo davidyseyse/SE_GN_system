@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   formatPackageAnswer,
+  formatTeacherAnswerAttribution,
   parsePackageAnswers
 } from "../dist/lib/questionPackageAnswer.js";
 
@@ -21,4 +22,12 @@ test("formats item-id keyed answers using subquestion prompts", () => {
 test("keeps legacy plain answers readable", () => {
   assert.equal(formatPackageAnswer("legacy answer", items), "legacy answer");
   assert.equal(parsePackageAnswers("legacy answer"), null);
+});
+
+test("formats original identity and challenge group without ambiguous concatenation", () => {
+  assert.equal(formatTeacherAnswerAttribution("1 / 第1組", 1, false, false), "1 / 第1組");
+  assert.equal(formatTeacherAnswerAttribution("1 / 第1組", 1, false, true), "1 / 第1組　挑戰：第1組");
+  assert.equal(formatTeacherAnswerAttribution("1 / 第1組", 6, false, true), "1 / 第1組　挑戰：第6組");
+  assert.equal(formatTeacherAnswerAttribution("teacher", 6, true, true), "挑戰：第6組");
+  assert.doesNotMatch(formatTeacherAnswerAttribution("1 / 第1組", 6, false, true), /第1組／第6組/);
 });

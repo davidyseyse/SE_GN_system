@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-public final class WebSocketServer {
+public final class WebSocketServer implements AutoCloseable {
   private final ServerConfig config;
   private final AuthTokenService authTokenService;
   private final RealtimeEventBroker eventBroker;
@@ -38,6 +38,25 @@ public final class WebSocketServer {
     Thread acceptThread = new Thread(this::acceptLoop, "ws-accept");
     acceptThread.setDaemon(true);
     acceptThread.start();
+  }
+
+  @Override
+  public void close() {
+    if (serverSocket != null) {
+      try {
+        serverSocket.close();
+      } catch (IOException ignored) {
+        // The listener is already stopping.
+      }
+    }
+    for (WebSocketClient client : List.copyOf(clients.values())) {
+      try {
+        client.socket().close();
+      } catch (IOException ignored) {
+        // The client has already disconnected.
+      }
+    }
+    clients.clear();
   }
 
   private void acceptLoop() {

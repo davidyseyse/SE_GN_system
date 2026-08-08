@@ -56,7 +56,7 @@ public final class QuestionPackageController {
       List<QuestionPackageService.ItemDraft> items = parseItems(request.get("items"));
       int score = integerValue(request.get("score"), 10, "score");
       Integer limit = request.containsKey("answerTimeLimitSeconds")
-          ? integerValue(request.get("answerTimeLimitSeconds"), 30, "answerTimeLimitSeconds")
+          ? positiveIntegerValue(request.get("answerTimeLimitSeconds"), "answerTimeLimitSeconds")
           : 30;
       QuestionPackageService.CreatedPackage created = packageService.create(
           classroom.id(), actor.id(), stringValue(request, "title"), sheetConfigId,
@@ -164,6 +164,36 @@ public final class QuestionPackageController {
     } catch (NumberFormatException exception) {
       throw new IllegalArgumentException(key + " must be an integer");
     }
+  }
+
+  static int positiveIntegerValue(Object raw, String key) {
+    if (raw == null) {
+      throw new IllegalArgumentException(key + " must be a positive integer");
+    }
+
+    long parsed;
+    if (raw instanceof Number number) {
+      try {
+        parsed = new java.math.BigDecimal(number.toString()).longValueExact();
+      } catch (ArithmeticException | NumberFormatException exception) {
+        throw new IllegalArgumentException(key + " must be a positive integer");
+      }
+    } else {
+      String value = raw.toString().trim();
+      if (value.isEmpty()) {
+        throw new IllegalArgumentException(key + " must be a positive integer");
+      }
+      try {
+        parsed = Long.parseLong(value);
+      } catch (NumberFormatException exception) {
+        throw new IllegalArgumentException(key + " must be a positive integer");
+      }
+    }
+
+    if (parsed <= 0 || parsed > Integer.MAX_VALUE) {
+      throw new IllegalArgumentException(key + " must be a positive integer");
+    }
+    return (int) parsed;
   }
 
   private static String requiredQuery(HttpExchangeAdapter exchange, String key) {

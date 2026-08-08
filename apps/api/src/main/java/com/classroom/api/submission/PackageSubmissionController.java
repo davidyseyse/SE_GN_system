@@ -2,16 +2,15 @@ package com.classroom.api.submission;
 
 import com.classroom.api.auth.AuthContext;
 import com.classroom.api.auth.AuthorizationGuard;
+import com.classroom.api.buzz.BuzzDeadlineService;
 import com.classroom.api.contract.QuestionState;
 import com.classroom.api.contract.Role;
-import com.classroom.api.data.model.BuzzRecordEntity;
 import com.classroom.api.data.model.ClassroomEntity;
 import com.classroom.api.data.model.QuestionEntity;
 import com.classroom.api.data.model.QuestionItemEntity;
 import com.classroom.api.data.model.SheetConfigEntity;
 import com.classroom.api.data.model.SubmissionEntity;
 import com.classroom.api.data.model.UserEntity;
-import com.classroom.api.data.repository.BuzzRepository;
 import com.classroom.api.data.repository.BuzzRoundRepository;
 import com.classroom.api.data.repository.ClassroomRepository;
 import com.classroom.api.data.repository.QuestionItemRepository;
@@ -43,12 +42,12 @@ public final class PackageSubmissionController {
   private final QuestionItemRepository itemRepository;
   private final SubmissionRepository submissionRepository;
   private final UserRepository userRepository;
-  private final BuzzRepository buzzRepository;
   private final BuzzRoundRepository roundRepository;
   private final SheetConfigRepository sheetConfigRepository;
   private final QuestionPackageService packageService;
   private final GoogleSheetsSyncService sheetsSyncService;
   private final RealtimeEventBroker eventBroker;
+  private final BuzzDeadlineService buzzDeadlineService;
 
   public PackageSubmissionController(
       AuthorizationGuard authorizationGuard,
@@ -57,12 +56,12 @@ public final class PackageSubmissionController {
       QuestionItemRepository itemRepository,
       SubmissionRepository submissionRepository,
       UserRepository userRepository,
-      BuzzRepository buzzRepository,
       BuzzRoundRepository roundRepository,
       SheetConfigRepository sheetConfigRepository,
       QuestionPackageService packageService,
       GoogleSheetsSyncService sheetsSyncService,
-      RealtimeEventBroker eventBroker
+      RealtimeEventBroker eventBroker,
+      BuzzDeadlineService buzzDeadlineService
   ) {
     this.authorizationGuard = authorizationGuard;
     this.classroomRepository = classroomRepository;
@@ -70,12 +69,12 @@ public final class PackageSubmissionController {
     this.itemRepository = itemRepository;
     this.submissionRepository = submissionRepository;
     this.userRepository = userRepository;
-    this.buzzRepository = buzzRepository;
     this.roundRepository = roundRepository;
     this.sheetConfigRepository = sheetConfigRepository;
     this.packageService = packageService;
     this.sheetsSyncService = sheetsSyncService;
     this.eventBroker = eventBroker;
+    this.buzzDeadlineService = buzzDeadlineService;
   }
 
   public HttpHandlerFunction submitHandler() {
@@ -98,13 +97,8 @@ public final class PackageSubmissionController {
       UserEntity user = userRepository.findByExternalId(auth.subject());
       if (user == null) throw new IllegalArgumentException("User not found");
       int round = roundRepository.current(packageId);
-      if (state == QuestionState.BUZZ_OPEN) {
-        BuzzRecordEntity winner = buzzRepository.findActiveWinner(packageId, round);
-        if (winner == null || !winner.userId().equals(user.id())) {
-          throw new SecurityException("Only the package buzz winner can submit answers");
-        }
-      }
-      if (submissionRepository.hasSubmission(packageId, user.id(), round)) {
+      boolean winnerSubmission = state == QuestionState.BUZZ_OPEN;
+      if (!winnerSubmission && submissionRepository.hasSubmission(packageId, user.id(), round)) {
         throw new IllegalArgumentException("Duplicate package submission is not allowed");
       }
 
@@ -117,8 +111,13 @@ public final class PackageSubmissionController {
       String answerJson = toJson(answers);
       SubmissionEntity submission = new SubmissionEntity(
           UUID.randomUUID(), classroom.id(), packageId, user.id(), 1, answerJson,
-          "RECEIVED", null, null, "PENDING", Instant.now(), null);
-      submissionRepository.save(submission, round);
+          "RECEIVED", null, null, "PENDING", Instant.now(), null,
+          SheetAnswerFormatter.extractGroupNumber(user.displayName()), false, false);
+      if (winnerSubmission) {
+        buzzDeadlineService.saveWinnerSubmission(submission, round);
+      } else {
+        submissionRepository.save(submission, round);
+      }
 
       String syncStatus = "NOT_REQUIRED";
       UUID configId = packageService.findSheetConfigId(packageId);
@@ -130,7 +129,7 @@ public final class PackageSubmissionController {
             if (item.targetCell() != null) {
               values.put(
                   item.targetCell(),
-                  SheetAnswerFormatter.format(answers.get(item.id()), user.displayName()));
+                  SheetAnswerFormatter.format(answers.get(item.id()), submission.groupNumber()));
             }
           }
           try {
@@ -186,7 +185,7 @@ public final class PackageSubmissionController {
         }
         valuesByCell.put(item.targetCell(), SheetAnswerFormatter.format(
             String.valueOf(answer),
-            user == null ? submission.userId().toString() : user.displayName()));
+            submission.groupNumber()));
       }
       try {
         sheetsSyncService.updateCells(config.sheetId(), valuesByCell);

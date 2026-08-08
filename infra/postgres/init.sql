@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS buzz_records (
   successful BOOLEAN NOT NULL DEFAULT FALSE,
   round_number INTEGER NOT NULL DEFAULT 0,
   active BOOLEAN NOT NULL DEFAULT TRUE,
+  answer_deadline_at TIMESTAMPTZ NULL,
   UNIQUE (question_id, request_id)
 );
 
@@ -127,7 +128,18 @@ CREATE TABLE IF NOT EXISTS question_buzz_rounds (
 
 ALTER TABLE buzz_records ADD COLUMN IF NOT EXISTS round_number INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE buzz_records ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE buzz_records ADD COLUMN IF NOT EXISTS answer_deadline_at TIMESTAMPTZ NULL;
 ALTER TABLE submissions ADD COLUMN IF NOT EXISTS round_number INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE submissions ADD COLUMN IF NOT EXISTS group_number INTEGER NULL;
+ALTER TABLE submissions ADD COLUMN IF NOT EXISTS entered_by_teacher BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE submissions ADD COLUMN IF NOT EXISTS group_challenged BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE submissions DROP CONSTRAINT IF EXISTS submissions_group_number_positive;
+ALTER TABLE submissions ADD CONSTRAINT submissions_group_number_positive CHECK (group_number IS NULL OR group_number > 0);
+UPDATE submissions s
+SET group_number = substring(u.display_name FROM '([0-9]+)[^0-9]*$')::INTEGER
+FROM users u
+WHERE s.user_id = u.id AND s.group_number IS NULL
+  AND u.display_name ~ '[0-9]+[^0-9]*$';
 ALTER TABLE questions ALTER COLUMN state SET DEFAULT 'READY';
 
 DO $$
@@ -181,6 +193,10 @@ DROP INDEX IF EXISTS idx_buzz_records_single_winner;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_buzz_records_single_active_winner
   ON buzz_records (question_id, round_number)
   WHERE successful = TRUE AND active = TRUE;
+
+CREATE INDEX IF NOT EXISTS idx_buzz_records_overdue_active_winner
+  ON buzz_records (answer_deadline_at, question_id, round_number)
+  WHERE successful = TRUE AND active = TRUE AND answer_deadline_at IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_submissions_lookup
   ON submissions (question_id, user_id, submitted_at DESC);

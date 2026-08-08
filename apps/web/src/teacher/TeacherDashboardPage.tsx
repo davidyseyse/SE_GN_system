@@ -26,20 +26,11 @@ import {
   formatRealtimeStatus
 } from "../lib/text";
 import { useRealtimeFeed } from "../realtime/useRealtimeFeed";
-import { formatPackageAnswer } from "../lib/questionPackageAnswer";
+import { formatPackageAnswer, formatTeacherAnswerAttribution, parsePackageAnswers } from "../lib/questionPackageAnswer";
 
 type RealtimeEventView = {
   type: string;
   occurredAt: string;
-};
-
-type SubmissionView = {
-  submissionId: string;
-  userId: string;
-  displayName: string;
-  answer: string;
-  reviewStatus: string;
-  submittedAt: string;
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8080";
@@ -100,6 +91,7 @@ export function TeacherDashboardPage() {
   const [resumeClassroomCode, setResumeClassroomCode] = useState(stored?.classroomCode ?? "");
   const [classroomName, setClassroomName] = useState("課堂 A");
   const [questionPackageTitle, setQuestionPackageTitle] = useState("");
+  const [answerTimeLimitSeconds, setAnswerTimeLimitSeconds] = useState("30");
   const [questionItems, setQuestionItems] = useState<Array<{ clientId: string; prompt: string; targetCell: string }>>([
     { clientId: crypto.randomUUID(), prompt: "", targetCell: "" }
   ]);
@@ -109,10 +101,11 @@ export function TeacherDashboardPage() {
   const [selectedSheetConfigId, setSelectedSheetConfigId] = useState("");
   const [questions, setQuestions] = useState<QuestionView[]>([]);
   const [answersByQuestionId, setAnswersByQuestionId] = useState<Record<string, SubmittedAnswerView[]>>({});
-  const [selectedQuestionId, setSelectedQuestionId] = useState("");
-  const [submissions, setSubmissions] = useState<SubmissionView[]>([]);
   const [editingSubmissionId, setEditingSubmissionId] = useState("");
   const [editingAnswer, setEditingAnswer] = useState("");
+  const [editingGroupNumber, setEditingGroupNumber] = useState("");
+  const [manualQuestionId, setManualQuestionId] = useState("");
+  const [retrySheetSubmissionId, setRetrySheetSubmissionId] = useState("");
   const [members, setMembers] = useState<Array<Record<string, unknown>>>([]);
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
   const [notice, setNotice] = useState("請先建立課堂，或輸入課堂代碼重返既有課堂。");
@@ -164,17 +157,6 @@ export function TeacherDashboardPage() {
   useEffect(() => {
     setQuestions((current) => applyTeacherBuzzEvent(current, lastRealtimeEvent));
   }, [lastRealtimeEvent]);
-
-  useEffect(() => {
-    if (!teacherToken || !classroomCode || !selectedQuestionId) {
-      setSubmissions([]);
-      return;
-    }
-    void authorizedGet<{ submissions: SubmissionView[] }>(
-      `/api/reports/submissions?classroomCode=${encodeURIComponent(classroomCode)}&questionId=${encodeURIComponent(selectedQuestionId)}`,
-      teacherToken
-    ).then((result) => setSubmissions(result.submissions));
-  }, [teacherToken, classroomCode, selectedQuestionId, lastRealtimeEvent]);
 
   async function handleCreateClassroom() {
     if (!teacherToken || !stored) {
@@ -233,16 +215,21 @@ export function TeacherDashboardPage() {
     if (!teacherToken || !classroomCode) {
       return;
     }
+    const configuredAnswerTimeLimitSeconds = Number(answerTimeLimitSeconds);
+    if (!Number.isInteger(configuredAnswerTimeLimitSeconds) || configuredAnswerTimeLimitSeconds <= 0) {
+      setNotice("作答時限必須是正整數秒數。");
+      return;
+    }
     const result = await createQuestionPackage(teacherToken, classroomCode, {
       title: questionPackageTitle,
       sheetConfigId: selectedSheetConfigId,
       items: questionItems.map(({ prompt, targetCell }) => ({ prompt, targetCell })),
       score: 10,
-      answerTimeLimitSeconds: 30
+      answerTimeLimitSeconds: configuredAnswerTimeLimitSeconds
     });
     setQuestions((current) => [...current, result.package]);
-    setSelectedQuestionId(String(result.package.id));
     setQuestionPackageTitle("");
+    setAnswerTimeLimitSeconds("30");
     setQuestionItems([{ clientId: crypto.randomUUID(), prompt: "", targetCell: "" }]);
     setNotice("題目已建立。");
   }
@@ -311,45 +298,92 @@ export function TeacherDashboardPage() {
       setNotice("請先開放搶答，待學生提交答案後再完成搶答。");
       return;
     }
-    setSelectedQuestionId(questionId);
-    setNotice("搶答已完成，請在下方檢討並修改學生答案。");
+    setNotice("搶答已完成，可直接在題目卡中修改學生答案。");
   }
 
   async function handleUpdateAnswer() {
-    if (!teacherToken || !editingSubmissionId) {
+    if (!teacherToken || !editingSubmissionId || Number(editingGroupNumber) <= 0) {
+      setNotice("請輸入有效的組別。");
       return;
     }
-    await authorizedPost("/api/submissions/answer", teacherToken, {
+    const syncResult = await authorizedPost<{ syncStatus: string; syncError: string }>("/api/submissions/answer", teacherToken, {
       submissionId: editingSubmissionId,
-      answer: editingAnswer
+      answer: editingAnswer,
+      groupNumber: Number(editingGroupNumber)
     });
-    setSubmissions((current) =>
-      current.map((submission) =>
-        submission.submissionId === editingSubmissionId
-          ? { ...submission, answer: editingAnswer }
-          : submission
-      )
-    );
+    setAnswersByQuestionId((current) => Object.fromEntries(Object.entries(current).map(([id, answers]) => [
+      id,
+      answers.map((submission) => submission.submissionId === editingSubmissionId
+        ? { ...submission, answer: editingAnswer, groupNumber: Number(editingGroupNumber), groupChallenged: true }
+        : submission)
+    ])));
     setEditingSubmissionId("");
     setEditingAnswer("");
-    setNotice("學生答案已更新，且已重新同步到 Google Sheets。");
+    setEditingGroupNumber("");
+    if (syncResult.syncStatus === "RETRYABLE") {
+      setRetrySheetSubmissionId(editingSubmissionId);
+      setNotice(`答案已儲存，但 Google Sheets 同步失敗：${syncResult.syncError || "請稍後重試"}`);
+    } else {
+      setRetrySheetSubmissionId("");
+      setNotice("學生答案已更新，Google Sheets 同步完成。");
+    }
   }
 
   async function handleDeleteAnswer(submissionId: string) {
     if (!teacherToken) return;
     await authorizedPost("/api/submissions/delete", teacherToken, { submissionId });
-    setSubmissions((current) => current.filter((submission) => submission.submissionId !== submissionId));
+    setAnswersByQuestionId((current) => Object.fromEntries(Object.entries(current).map(([id, answers]) => [
+      id, answers.filter((submission) => submission.submissionId !== submissionId)
+    ])));
     setNotice("學生答案已刪除。");
+  }
+
+  function updateEditingPackageAnswer(itemId: string, value: string) {
+    const parsed = parsePackageAnswers(editingAnswer) ?? {};
+    setEditingAnswer(JSON.stringify({ ...parsed, [itemId]: value }));
+  }
+
+  async function handleCreateManualAnswer(questionId: string) {
+    if (!teacherToken || !classroomCode || Number(editingGroupNumber) <= 0) {
+      setNotice("請輸入有效的組別。");
+      return;
+    }
+    await authorizedPost("/api/submissions/manual", teacherToken, {
+      classroomCode,
+      questionId,
+      answer: editingAnswer,
+      groupNumber: Number(editingGroupNumber)
+    });
+    const result = await getCurrentAnswers(teacherToken, classroomCode, questionId);
+    setAnswersByQuestionId((current) => ({ ...current, [questionId]: result.answers }));
+    setManualQuestionId("");
+    setEditingAnswer("");
+    setEditingGroupNumber("");
+    setNotice("答案已補登。");
+  }
+
+  async function handleRetrySheetSync(submissionId: string) {
+    if (!teacherToken) return;
+    const result = await authorizedPost<{ syncStatus: string; syncError: string }>(
+      "/api/submissions/answer/retry", teacherToken, { submissionId }
+    );
+    if (result.syncStatus === "SYNCED" || result.syncStatus === "NOT_REQUIRED") {
+      setRetrySheetSubmissionId("");
+      setNotice("Google Sheets 重新同步完成。");
+    } else {
+      setNotice(`Google Sheets 同步仍失敗：${result.syncError || "請稍後重試"}`);
+    }
   }
 
   async function handleDeleteQuestion(questionId: string) {
     if (!teacherToken || !classroomCode) return;
     await authorizedPost("/api/questions/delete", teacherToken, { classroomCode, questionId });
     setQuestions((current) => current.filter((question) => String(question.id) !== questionId));
-    if (selectedQuestionId === questionId) {
-      setSelectedQuestionId("");
-      setSubmissions([]);
-    }
+    setAnswersByQuestionId((current) => {
+      const next = { ...current };
+      delete next[questionId];
+      return next;
+    });
     setNotice("題目已刪除。");
   }
 
@@ -385,6 +419,8 @@ export function TeacherDashboardPage() {
   const isQuestionPackageValid = Boolean(
     questionPackageTitle.trim()
     && selectedSheetConfigId
+    && Number.isInteger(Number(answerTimeLimitSeconds))
+    && Number(answerTimeLimitSeconds) > 0
     && questionItems.length > 0
     && questionItems.every((item) =>
       item.prompt.trim() && singleCellPattern.test(item.targetCell.trim())
@@ -460,6 +496,17 @@ export function TeacherDashboardPage() {
               value={questionPackageTitle}
               onChange={(event) => setQuestionPackageTitle(event.target.value)}
               placeholder="題目標題"
+            />
+          </label>
+          <label>
+            作答時限（秒）
+            <input
+              type="number"
+              min="1"
+              step="1"
+              inputMode="numeric"
+              value={answerTimeLimitSeconds}
+              onChange={(event) => setAnswerTimeLimitSeconds(event.target.value)}
             />
           </label>
           {questionItems.map((item, index) => (
@@ -544,11 +591,55 @@ export function TeacherDashboardPage() {
               ) : null}
               {currentAnswers.map((submission) => (
                 <div key={submission.submissionId} className="submitted-answer">
-                  <strong>{submission.displayName}</strong>
+                  <strong>{formatTeacherAnswerAttribution(submission.displayName, submission.groupNumber, submission.enteredByTeacher, submission.groupChallenged)}</strong>
+                  {editingSubmissionId === submission.submissionId ? (
+                    <div className="stack-form">
+                      <label>組別<input type="number" min="1" value={editingGroupNumber} onChange={(event) => setEditingGroupNumber(event.target.value)} /></label>
+                      {question.items?.length ? question.items.map((item) => (
+                        <label key={item.id}>{item.prompt}
+                          <input
+                            value={parsePackageAnswers(editingAnswer)?.[item.id] ?? ""}
+                            onChange={(event) => updateEditingPackageAnswer(item.id, event.target.value)}
+                          />
+                        </label>
+                      )) : <textarea value={editingAnswer} onChange={(event) => setEditingAnswer(event.target.value)} />}
+                      <div className="action-row">
+                        <button onClick={() => void handleUpdateAnswer()}>儲存修改</button>
+                        <button type="button" className="secondary-button" onClick={() => { setEditingSubmissionId(""); setEditingAnswer(""); setEditingGroupNumber(""); }}>取消</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
                       <span>提交答案：{formatPackageAnswer(submission.answer, question.items ?? [])}</span>
-                  <span className="teacher-status-badge">✓ 已作答</span>
+                      <span className="teacher-status-badge">✓ 已作答</span>
+                      <button type="button" className="secondary-button" onClick={() => {
+                        setEditingSubmissionId(submission.submissionId);
+                        setEditingAnswer(submission.answer);
+                        setEditingGroupNumber(String(submission.groupNumber || ""));
+                      }}>修改答案</button>
+                      {retrySheetSubmissionId === submission.submissionId ? (
+                        <button type="button" className="secondary-button" onClick={() => void handleRetrySheetSync(submission.submissionId)}>重試 Google Sheets 同步</button>
+                      ) : null}
+                    </>
+                  )}
                 </div>
               ))}
+              {questionState === "LOCKED" && currentAnswers.length === 0 ? (
+                manualQuestionId === questionId ? (
+                  <div className="submitted-answer stack-form">
+                    <label>組別<input type="number" min="1" value={editingGroupNumber} onChange={(event) => setEditingGroupNumber(event.target.value)} /></label>
+                    {question.items?.length ? question.items.map((item) => (
+                      <label key={item.id}>{item.prompt}
+                        <input value={parsePackageAnswers(editingAnswer)?.[item.id] ?? ""} onChange={(event) => updateEditingPackageAnswer(item.id, event.target.value)} />
+                      </label>
+                    )) : <textarea value={editingAnswer} onChange={(event) => setEditingAnswer(event.target.value)} />}
+                    <div className="action-row">
+                      <button onClick={() => void handleCreateManualAnswer(questionId)}>儲存答案</button>
+                      <button type="button" className="secondary-button" onClick={() => { setManualQuestionId(""); setEditingAnswer(""); setEditingGroupNumber(""); }}>取消</button>
+                    </div>
+                  </div>
+                ) : <button type="button" className="secondary-button" onClick={() => { setManualQuestionId(questionId); setEditingAnswer(question.items?.length ? "{}" : ""); setEditingGroupNumber(""); }}>修改答案</button>
+              ) : null}
               <div className="action-row">
                 <button disabled={!canOpen} onClick={() => void handleStateChange(String(question.id), "BUZZ_OPEN")}>開放搶答</button>
                 {String(question.type) !== "BUZZ" ? (
@@ -560,39 +651,6 @@ export function TeacherDashboardPage() {
               </div>
             </article>
           );})}
-        </div>
-      </div>
-
-      <div className="panel">
-        <h3>搶答檢討與學生答案修改</h3>
-        <p className="muted">{selectedQuestionId ? `目前題目 ID：${selectedQuestionId}` : "學生送出答案後，請按「完成搶答並檢討」。"}</p>
-        <div className="card-list">
-          {submissions.map((submission) => (
-            <article key={submission.submissionId} className="mini-card">
-              <div className="mini-card__head">
-                <strong>{submission.displayName}</strong>
-              </div>
-              {editingSubmissionId === submission.submissionId ? (
-                <div className="stack-form">
-                  <textarea value={editingAnswer} onChange={(event) => setEditingAnswer(event.target.value)} />
-                  <div className="action-row">
-                    <button onClick={() => void handleUpdateAnswer()}>儲存修改</button>
-                    <button type="button" className="secondary-button" onClick={() => { setEditingSubmissionId(""); setEditingAnswer(""); }}>取消</button>
-                  </div>
-                </div>
-              ) : (
-                <div className="action-row">
-                  <span>{submission.answer}</span>
-                  <button type="button" className="secondary-button" onClick={() => { setEditingSubmissionId(submission.submissionId); setEditingAnswer(submission.answer); }}>
-                    修改答案
-                  </button>
-                  <button type="button" className="secondary-button" onClick={() => void handleDeleteAnswer(submission.submissionId)}>
-                    刪除答案
-                  </button>
-                </div>
-              )}
-            </article>
-          ))}
         </div>
       </div>
 

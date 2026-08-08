@@ -25,8 +25,8 @@ public final class BuzzRepository {
 
   public void save(BuzzRecordEntity record, int roundNumber) {
     String sql = """
-        INSERT INTO buzz_records (id, classroom_id, question_id, user_id, request_id, receipt_order, received_at, outcome_status, successful, round_number, active)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
+        INSERT INTO buzz_records (id, classroom_id, question_id, user_id, request_id, receipt_order, received_at, outcome_status, successful, round_number, active, answer_deadline_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?)
         """;
 
     try (Connection connection = database.openConnection();
@@ -41,6 +41,7 @@ public final class BuzzRepository {
       statement.setString(8, record.outcomeStatus());
       statement.setBoolean(9, record.successful());
       statement.setInt(10, roundNumber);
+      statement.setTimestamp(11, SqlTime.from(record.answerDeadlineAt()));
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to save buzz record", exception);
@@ -48,22 +49,61 @@ public final class BuzzRepository {
   }
 
   public BuzzRecordEntity findActiveWinner(UUID questionId, int roundNumber) {
-    return findByQuestionId(questionId).stream()
-        .filter(BuzzRecordEntity::successful)
-        .filter(record -> isActive(record.id(), roundNumber))
-        .findFirst()
-        .orElse(null);
-  }
-
-  private boolean isActive(UUID recordId, int roundNumber) {
-    String sql = "SELECT 1 FROM buzz_records WHERE id = ? AND round_number = ? AND active = TRUE";
+    String sql = """
+        SELECT id, classroom_id, question_id, user_id, request_id, receipt_order,
+               received_at, outcome_status, successful, answer_deadline_at
+        FROM buzz_records
+        WHERE question_id = ? AND round_number = ? AND successful = TRUE AND active = TRUE
+        ORDER BY receipt_order ASC, received_at ASC
+        LIMIT 1
+        """;
     try (Connection connection = database.openConnection();
          PreparedStatement statement = connection.prepareStatement(sql)) {
-      statement.setObject(1, recordId);
+      statement.setObject(1, questionId);
       statement.setInt(2, roundNumber);
-      return statement.executeQuery().next();
+      ResultSet resultSet = statement.executeQuery();
+      return resultSet.next() ? mapBuzzRecord(resultSet) : null;
     } catch (SQLException exception) {
-      throw new DatabaseException("Unable to check active buzz winner", exception);
+      throw new DatabaseException("Unable to load active buzz winner", exception);
+    }
+  }
+
+  public List<WinnerKey> listOverdueWinnerKeys(int limit) {
+    String sql = """
+        SELECT br.question_id, br.round_number
+        FROM buzz_records br
+        JOIN questions q ON q.id = br.question_id
+        JOIN question_buzz_rounds qbr
+          ON qbr.question_id = br.question_id AND qbr.current_round = br.round_number
+        WHERE br.successful = TRUE
+          AND br.active = TRUE
+          AND br.answer_deadline_at IS NOT NULL
+          AND br.answer_deadline_at <= clock_timestamp()
+          AND q.state = 'BUZZ_OPEN'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM submissions s
+            WHERE s.question_id = br.question_id
+              AND s.user_id = br.user_id
+              AND s.round_number = br.round_number
+          )
+        ORDER BY br.answer_deadline_at ASC
+        LIMIT ?
+        """;
+    List<WinnerKey> results = new ArrayList<>();
+    try (Connection connection = database.openConnection();
+         PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setInt(1, limit);
+      ResultSet resultSet = statement.executeQuery();
+      while (resultSet.next()) {
+        results.add(new WinnerKey(
+            resultSet.getObject("question_id", UUID.class),
+            resultSet.getInt("round_number")
+        ));
+      }
+      return results;
+    } catch (SQLException exception) {
+      throw new DatabaseException("Unable to list overdue buzz winners", exception);
     }
   }
 
@@ -85,7 +125,8 @@ public final class BuzzRepository {
 
   public List<BuzzRecordEntity> findByQuestionId(UUID questionId) {
     String sql = """
-        SELECT id, classroom_id, question_id, user_id, request_id, receipt_order, received_at, outcome_status, successful
+        SELECT id, classroom_id, question_id, user_id, request_id, receipt_order,
+               received_at, outcome_status, successful, answer_deadline_at
         FROM buzz_records
         WHERE question_id = ?
         ORDER BY receipt_order ASC, received_at ASC
@@ -97,21 +138,30 @@ public final class BuzzRepository {
       statement.setObject(1, questionId);
       ResultSet resultSet = statement.executeQuery();
       while (resultSet.next()) {
-        results.add(new BuzzRecordEntity(
-            resultSet.getObject("id", UUID.class),
-            resultSet.getObject("classroom_id", UUID.class),
-            resultSet.getObject("question_id", UUID.class),
-            resultSet.getObject("user_id", UUID.class),
-            resultSet.getString("request_id"),
-            resultSet.getLong("receipt_order"),
-            resultSet.getTimestamp("received_at").toInstant(),
-            resultSet.getString("outcome_status"),
-            resultSet.getBoolean("successful")
-        ));
+        results.add(mapBuzzRecord(resultSet));
       }
       return results;
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to load buzz records", exception);
     }
+  }
+
+  private static BuzzRecordEntity mapBuzzRecord(ResultSet resultSet) throws SQLException {
+    return new BuzzRecordEntity(
+        resultSet.getObject("id", UUID.class),
+        resultSet.getObject("classroom_id", UUID.class),
+        resultSet.getObject("question_id", UUID.class),
+        resultSet.getObject("user_id", UUID.class),
+        resultSet.getString("request_id"),
+        resultSet.getLong("receipt_order"),
+        resultSet.getTimestamp("received_at").toInstant(),
+        resultSet.getString("outcome_status"),
+        resultSet.getBoolean("successful"),
+        resultSet.getTimestamp("answer_deadline_at") == null
+            ? null : resultSet.getTimestamp("answer_deadline_at").toInstant()
+    );
+  }
+
+  public record WinnerKey(UUID questionId, int roundNumber) {
   }
 }

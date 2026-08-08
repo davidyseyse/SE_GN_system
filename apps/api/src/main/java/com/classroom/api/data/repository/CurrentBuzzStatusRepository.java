@@ -27,12 +27,13 @@ public final class CurrentBuzzStatusRepository {
                winner.user_id AS winner_user_id,
                winner_user.external_id AS winner_external_id,
                winner_user.display_name AS winner_display_name,
+               winner.answer_deadline_at,
                submission.submission_status,
                submission.review_status
         FROM questions q
         LEFT JOIN question_buzz_rounds qbr ON qbr.question_id = q.id
         LEFT JOIN LATERAL (
-          SELECT br.user_id
+          SELECT br.user_id, br.answer_deadline_at
           FROM buzz_records br
           WHERE br.question_id = q.id
             AND br.round_number = COALESCE(qbr.current_round, 0)
@@ -72,6 +73,8 @@ public final class CurrentBuzzStatusRepository {
             winnerUserId,
             resultSet.getString("winner_external_id"),
             resultSet.getString("winner_display_name"),
+            resultSet.getTimestamp("answer_deadline_at") == null
+                ? null : resultSet.getTimestamp("answer_deadline_at").toInstant(),
             submissionStatus,
             resultSet.getString("review_status")
         ));

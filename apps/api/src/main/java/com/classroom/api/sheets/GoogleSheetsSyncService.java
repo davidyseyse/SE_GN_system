@@ -32,9 +32,9 @@ public final class GoogleSheetsSyncService {
     this.credentials = loadCredentials();
   }
 
-  public void updateCell(String sheetId, String targetCell, String value) {
+  public boolean updateCell(String sheetId, String targetCell, String value) {
     if (credentials == null) {
-      return;
+      return false;
     }
     String encodedRange = URLEncoder.encode(targetCell, StandardCharsets.UTF_8).replace("+", "%20");
     String url = "https://sheets.googleapis.com/v4/spreadsheets/" + sheetId + "/values/" + encodedRange
@@ -49,11 +49,12 @@ public final class GoogleSheetsSyncService {
     if (response.statusCode() >= 400) {
       throw new IllegalStateException("Google Sheets update failed (HTTP " + response.statusCode() + "): " + response.body());
     }
+    return true;
   }
 
-  public void updateCells(String sheetId, Map<String, String> valuesByCell) {
+  public boolean updateCells(String sheetId, Map<String, String> valuesByCell) {
     if (credentials == null || valuesByCell.isEmpty()) {
-      return;
+      return false;
     }
     StringBuilder data = new StringBuilder();
     for (Map.Entry<String, String> entry : valuesByCell.entrySet()) {
@@ -74,6 +75,7 @@ public final class GoogleSheetsSyncService {
       throw new IllegalStateException(
           "Google Sheets batch update failed (HTTP " + response.statusCode() + "): " + response.body());
     }
+    return true;
   }
 
   private synchronized String getAccessToken() {

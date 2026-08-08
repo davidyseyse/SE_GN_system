@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 
 const teacherSource = readFileSync(new URL("../src/teacher/TeacherDashboardPage.tsx", import.meta.url), "utf8");
 const studentSource = readFileSync(new URL("../src/student/StudentPlayPage.tsx", import.meta.url), "utf8");
+const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 test("teacher authoring starts with one stable-keyed subquestion", () => {
   assert.match(
@@ -29,6 +30,31 @@ test("package form validates duplicate cells and resets only after successful aw
   );
 });
 
+test("teacher configures a positive whole-number answer limit instead of a hard-coded value", () => {
+  assert.match(teacherSource, /setAnswerTimeLimitSeconds\] = useState\("30"\)/);
+  assert.match(teacherSource, /type="number"/);
+  assert.match(teacherSource, /min="1"/);
+  assert.match(teacherSource, /step="1"/);
+  assert.match(teacherSource, /Number\.isInteger\(configuredAnswerTimeLimitSeconds\)/);
+  assert.match(teacherSource, /answerTimeLimitSeconds: configuredAnswerTimeLimitSeconds/);
+  assert.doesNotMatch(teacherSource, /answerTimeLimitSeconds:\s*30/);
+});
+
+test("teacher edits current answers inside the question card and removes the legacy review panel", () => {
+  assert.doesNotMatch(teacherSource, /\/api\/reports\/submissions/);
+  assert.doesNotMatch(teacherSource, /selectedQuestionId/);
+  assert.match(teacherSource, /editingGroupNumber/);
+  assert.match(teacherSource, /updateEditingPackageAnswer/);
+  assert.match(teacherSource, /handleCreateManualAnswer/);
+  assert.match(teacherSource, /questionState === "LOCKED" && currentAnswers\.length === 0/);
+  assert.match(teacherSource, />修改答案</);
+  assert.match(teacherSource, /parsePackageAnswers\(editingAnswer\)\?\.\[item\.id\]/);
+  assert.match(teacherSource, /formatTeacherAnswerAttribution/);
+  assert.match(teacherSource, /\/api\/submissions\/answer\/retry/);
+  assert.match(teacherSource, /答案已儲存，但 Google Sheets 同步失敗/);
+  assert.match(teacherSource, />重試 Google Sheets 同步</);
+});
+
 test("student package uses one buzz action, item-keyed answers, and no event feed", () => {
   assert.match(studentSource, /items\.map\(\(item\) => \(\s*<label key=\{item\.id\}>/);
   assert.match(studentSource, /submitPackageAnswers/);
@@ -36,5 +62,41 @@ test("student package uses one buzz action, item-keyed answers, and no event fee
   assert.doesNotMatch(studentSource, /formatRealtimeEventType/);
   assert.match(studentSource, /formatRealtimeStatus\(realtime\.status\)/);
   assert.match(studentSource, /\{item\.prompt\}/);
-  assert.match(studentSource, /currentAnswers\.some\(\(submission\) => submission\.userId === currentUserId\)/);
+  assert.match(studentSource, /currentAnswers\.some\(\(submission\) => submission\.isOwnSubmission\)/);
+  assert.doesNotMatch(studentSource, /currentAnswers\.map\(\(submission\) => \(/);
+  assert.doesNotMatch(studentSource, /currentAnswers\.filter/);
+  assert.doesNotMatch(studentSource, /className="submitted-answer"/);
+  assert.doesNotMatch(studentSource, /提交答案：/);
+  assert.doesNotMatch(studentSource, /<span className="pill pill-won">✓ 已作答<\/span>/);
+});
+
+test("student answer refreshes ignore stale responses and reconcile after realtime resync", () => {
+  assert.match(studentSource, /createLatestRequestGate/);
+  assert.match(studentSource, /answerRefreshGateRef\.current\.isCurrent\(requestId\)/);
+  assert.match(studentSource, /Promise\.allSettled/);
+  assert.match(studentSource, /\[refreshStudentView, realtime\.events\]/);
+  assert.match(studentSource, /await refreshStudentView\(\)/);
+});
+
+test("student timeout cancellation is round-scoped and displays the expiration notice", () => {
+  assert.match(studentSource, /reason\?: string/);
+  assert.match(studentSource, /timeoutCancellationNotice\(/);
+  assert.match(studentSource, /realtimeEventApplies\(latestEvent\.type, eventRoundId, currentRoundId\)/);
+  assert.match(studentSource, /\[questionId\]: expirationNotice/);
+  assert.match(studentSource, /const canBuzz = state === "BUZZ_OPEN" && winnerUserId === ""/);
+});
+
+test("student winner countdown uses the server deadline and waits for authoritative release", () => {
+  assert.match(studentSource, /answerDeadlineAt\?: string/);
+  assert.match(studentSource, /remainingAnswerSeconds\(/);
+  assert.match(studentSource, /countdownSeconds !== null/);
+  assert.match(studentSource, /剩餘 \$\{countdownSeconds\} 秒/);
+  assert.match(studentSource, /: "時間到"/);
+  assert.match(studentSource, /isWinner && !hasSubmitted/);
+});
+
+test("student winner countdown is pinned to the question card top-right corner", () => {
+  assert.match(stylesSource, /\.question-list \.question-stage \{[\s\S]*?position: relative;/);
+  assert.match(stylesSource, /\.answer-countdown \{[\s\S]*?position: absolute;[\s\S]*?top: 1rem;[\s\S]*?right: 1rem;/);
+  assert.match(stylesSource, /\.question-list \.question-stage > strong:first-child \{[\s\S]*?padding-right: 7\.5rem;/);
 });

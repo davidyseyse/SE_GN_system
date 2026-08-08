@@ -381,6 +381,7 @@ textarea {
 }
 
 .question-list .question-stage {
+  position: relative;
   min-width: 0;
   padding: 1rem;
   border: 1px solid var(--line);
@@ -409,6 +410,33 @@ textarea {
 .pill-lost {
   background: rgba(59, 130, 246, 0.18);
   color: #1d4ed8;
+}
+
+.question-list .question-stage > strong:first-child {
+  padding-right: 7.5rem;
+}
+
+.answer-countdown {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  border-radius: 999px;
+  background: rgba(234, 179, 8, 0.18);
+  color: #713f12;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.answer-countdown-expired {
+  background: rgba(239, 68, 68, 0.12);
+  color: #991b1b;
 }
 
 .buzz-button {

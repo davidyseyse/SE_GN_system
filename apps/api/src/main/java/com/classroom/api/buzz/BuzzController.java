@@ -10,7 +10,6 @@ import com.classroom.api.data.model.QuestionEntity;
 import com.classroom.api.data.model.UserEntity;
 import com.classroom.api.data.repository.BuzzRepository;
 import com.classroom.api.data.repository.BuzzRoundRepository;
-import com.classroom.api.data.repository.SubmissionRepository;
 import com.classroom.api.data.repository.ClassroomRepository;
 import com.classroom.api.data.repository.QuestionRepository;
 import com.classroom.api.data.repository.QuestionItemRepository;
@@ -38,9 +37,9 @@ public final class BuzzController {
   private final BuzzRepository buzzRepository;
   private final ScoreRepository scoreRepository;
   private final RedisBuzzLockService redisBuzzLockService;
+  private final BuzzDeadlineService buzzDeadlineService;
   private final RealtimeEventBroker eventBroker;
   private final BuzzRoundRepository buzzRoundRepository;
-  private final SubmissionRepository submissionRepository;
   private final QuestionLifecycleService lifecycleService;
   private final QuestionItemRepository questionItemRepository;
 
@@ -52,9 +51,9 @@ public final class BuzzController {
       BuzzRepository buzzRepository,
       ScoreRepository scoreRepository,
       RedisBuzzLockService redisBuzzLockService,
+      BuzzDeadlineService buzzDeadlineService,
       RealtimeEventBroker eventBroker,
       BuzzRoundRepository buzzRoundRepository,
-      SubmissionRepository submissionRepository,
       QuestionLifecycleService lifecycleService,
       QuestionItemRepository questionItemRepository
   ) {
@@ -65,9 +64,9 @@ public final class BuzzController {
     this.buzzRepository = buzzRepository;
     this.scoreRepository = scoreRepository;
     this.redisBuzzLockService = redisBuzzLockService;
+    this.buzzDeadlineService = buzzDeadlineService;
     this.eventBroker = eventBroker;
     this.buzzRoundRepository = buzzRoundRepository;
-    this.submissionRepository = submissionRepository;
     this.lifecycleService = lifecycleService;
     this.questionItemRepository = questionItemRepository;
   }
@@ -89,12 +88,17 @@ public final class BuzzController {
       }
       String requestId = request.getOrDefault("requestId", UUID.randomUUID().toString());
       String roundKey = question.id() + ":" + roundNumber;
+      buzzDeadlineService.expireOverdueWinner(question.id(), roundNumber);
       long sequence = redisBuzzLockService.nextSequence("buzz:sequence:" + roundKey);
-      boolean winner = redisBuzzLockService.tryLock("buzz:winner:" + roundKey, requestId, 300);
+      UUID recordId = UUID.randomUUID();
+      boolean winner = buzzRepository.findActiveWinner(question.id(), roundNumber) == null
+          && tryWinnerLock("buzz:winner:" + roundKey, recordId, question.answerTimeLimitSeconds());
       Instant now = Instant.now();
+      Instant answerDeadlineAt = winner && isPositive(question.answerTimeLimitSeconds())
+          ? now.plusSeconds(question.answerTimeLimitSeconds()) : null;
 
       BuzzRecordEntity record = new BuzzRecordEntity(
-          UUID.randomUUID(),
+          recordId,
           classroom.id(),
           question.id(),
           user.id(),
@@ -102,13 +106,14 @@ public final class BuzzController {
           sequence,
           now,
           winner ? "WINNER" : "LATE",
-          winner
+          winner,
+          answerDeadlineAt
       );
       try {
         buzzRepository.save(record, roundNumber);
       } catch (RuntimeException exception) {
         if (winner) {
-          redisBuzzLockService.delete("buzz:winner:" + roundKey);
+          redisBuzzLockService.deleteIfValue("buzz:winner:" + roundKey, recordId.toString());
         }
         throw exception;
       }
@@ -139,14 +144,16 @@ public final class BuzzController {
           "displayName", user.displayName(),
           "requestId", requestId,
           "receiptOrder", sequence,
-          "successful", winner
+          "successful", winner,
+          "answerDeadlineAt", answerDeadlineAt == null ? "" : answerDeadlineAt.toString()
       ));
 
       HttpResponses.json(exchange, 200, Map.of(
           "accepted", winner,
           "requestId", requestId,
           "receiptOrder", sequence,
-          "outcomeStatus", record.outcomeStatus()
+          "outcomeStatus", record.outcomeStatus(),
+          "answerDeadlineAt", answerDeadlineAt == null ? "" : answerDeadlineAt.toString()
       ));
     };
   }
@@ -185,19 +192,7 @@ public final class BuzzController {
       UserEntity user = requireUser(authContext.subject());
       int roundNumber = buzzRoundRepository.current(question.id());
 
-      BuzzRecordEntity winner = buzzRepository.findActiveWinner(question.id(), roundNumber);
-      if (winner == null) {
-        throw new IllegalArgumentException("No active buzz winner");
-      }
-      if (!winner.userId().equals(user.id())) {
-        throw new SecurityException("只有搶答成功者可以取消鎖定");
-      }
-      if (submissionRepository.hasSubmission(question.id(), user.id(), roundNumber)) {
-        throw new IllegalArgumentException("Submitted answers cannot be cancelled");
-      }
-
-      buzzRepository.cancelActiveWinner(question.id(), roundNumber);
-      redisBuzzLockService.delete("buzz:winner:" + question.id() + ":" + roundNumber);
+      buzzDeadlineService.cancelWinner(question.id(), roundNumber, user.id());
       eventBroker.publish(classroom.classroomCode(), "BUZZ_CANCELLED", Map.of(
           "questionId", question.id().toString(),
           "roundId", Integer.toString(roundNumber),
@@ -268,6 +263,18 @@ public final class BuzzController {
       throw new IllegalArgumentException("User not found");
     }
     return user;
+  }
+
+  private boolean tryWinnerLock(String key, UUID recordId, Integer answerTimeLimitSeconds) {
+    if (!isPositive(answerTimeLimitSeconds)) {
+      return redisBuzzLockService.tryLock(key, recordId.toString());
+    }
+    long ttl = (long) answerTimeLimitSeconds + BuzzDeadlineService.REDIS_CLEANUP_GRACE_SECONDS;
+    return redisBuzzLockService.tryLock(key, recordId.toString(), (int) Math.min(Integer.MAX_VALUE, ttl));
+  }
+
+  private static boolean isPositive(Integer value) {
+    return value != null && value > 0;
   }
 
 }

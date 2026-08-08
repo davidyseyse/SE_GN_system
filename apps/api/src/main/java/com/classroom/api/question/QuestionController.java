@@ -78,7 +78,9 @@ public final class QuestionController {
           classroom.id(), actor.id(), requiredValue(request, "prompt"), sheetConfigId,
           List.of(new QuestionPackageService.ItemDraft(requiredValue(request, "prompt"), targetCell)),
           parseInteger(request.getOrDefault("score", "0"), "score"),
-          parseNullableInteger(request.get("answerTimeLimitSeconds"), "answerTimeLimitSeconds"));
+          request.containsKey("answerTimeLimitSeconds")
+              ? parsePositiveInteger(request.get("answerTimeLimitSeconds"), "answerTimeLimitSeconds")
+              : null);
       QuestionEntity question = created.packageEntity();
       HttpResponses.json(exchange, 201, Map.of("question", serialize(question)));
     };
@@ -104,7 +106,7 @@ public final class QuestionController {
           request.getOrDefault("publicationSettings", existing.publicationSettings()),
           request.containsKey("score") ? parseInteger(request.get("score"), "score") : existing.score(),
           request.containsKey("answerTimeLimitSeconds")
-              ? parseNullableInteger(request.get("answerTimeLimitSeconds"), "answerTimeLimitSeconds")
+              ? parsePositiveInteger(request.get("answerTimeLimitSeconds"), "answerTimeLimitSeconds")
               : existing.answerTimeLimitSeconds(),
           existing.createdBy(),
           existing.createdAt(),
@@ -180,8 +182,7 @@ public final class QuestionController {
       AuthContext authContext = authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT, Role.STUDENT);
       ClassroomEntity classroom = requireClassroom(requiredQuery(exchange, "classroomCode"));
       List<QuestionEntity> questions = questionRepository.listByClassroom(classroom.id());
-      Map<UUID, CurrentBuzzStatus> buzzStatuses = authContext.role() == Role.STUDENT
-          ? Map.of() : currentBuzzStatusRepository.listByClassroom(classroom.id());
+      Map<UUID, CurrentBuzzStatus> buzzStatuses = currentBuzzStatusRepository.listByClassroom(classroom.id());
       List<Map<String, Object>> payload = questions.stream()
           .filter(question -> authContext.role() != Role.STUDENT || isVisibleToStudent(question))
           .map(question -> {
@@ -198,12 +199,14 @@ public final class QuestionController {
                         ? "" : item.targetCell() == null ? "" : item.targetCell()))
                 .toList());
             serialized.put("roundId", Integer.toString(buzzRoundRepository.current(question.id())));
-            if (authContext.role() != Role.STUDENT) {
-              CurrentBuzzStatus buzzStatus = buzzStatuses.get(question.id());
-              if (buzzStatus != null) {
-                serialized.put("buzzStatus", buzzStatus.buzzStatus());
+            CurrentBuzzStatus buzzStatus = buzzStatuses.get(question.id());
+            if (buzzStatus != null) {
+              serialized.put("buzzStatus", buzzStatus.buzzStatus());
+              serialized.put("winnerExternalUserId", valueOrEmpty(buzzStatus.winnerExternalUserId()));
+              serialized.put("answerDeadlineAt", buzzStatus.answerDeadlineAt() == null
+                  ? "" : buzzStatus.answerDeadlineAt().toString());
+              if (authContext.role() != Role.STUDENT) {
                 serialized.put("winnerUserId", buzzStatus.winnerUserId() == null ? "" : buzzStatus.winnerUserId().toString());
-                serialized.put("winnerExternalUserId", valueOrEmpty(buzzStatus.winnerExternalUserId()));
                 serialized.put("winnerDisplayName", valueOrEmpty(buzzStatus.winnerDisplayName()));
                 serialized.put("submissionStatus", valueOrEmpty(buzzStatus.submissionStatus()));
                 serialized.put("reviewStatus", valueOrEmpty(buzzStatus.reviewStatus()));
@@ -341,10 +344,14 @@ public final class QuestionController {
     }
   }
 
-  private static Integer parseNullableInteger(String value, String fieldName) {
+  private static int parsePositiveInteger(String value, String fieldName) {
     if (value == null || value.isBlank()) {
-      return null;
+      throw new IllegalArgumentException(fieldName + " must be a positive integer");
     }
-    return parseInteger(value, fieldName);
+    int parsed = parseInteger(value, fieldName);
+    if (parsed <= 0) {
+      throw new IllegalArgumentException(fieldName + " must be a positive integer");
+    }
+    return parsed;
   }
 }
