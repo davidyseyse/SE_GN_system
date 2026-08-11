@@ -15,6 +15,9 @@ public record SubmissionEntity(
     Integer awardedScore,
     String reviewStatus,
     Instant submittedAt,
-    Instant reviewedAt
+    Instant reviewedAt,
+    Integer groupNumber,
+    boolean enteredByTeacher,
+    boolean groupChallenged
 ) {
 }

@@ -336,7 +336,7 @@ public final class BuzzDeadlineServiceTest {
     private SubmissionEntity submission() {
       return new SubmissionEntity(
           UUID.randomUUID(), classroomId, questionId, studentId, 1, "deadline answer",
-          "RECEIVED", null, null, "PENDING_REVIEW", Instant.now(), null);
+          "RECEIVED", null, null, "PENDING_REVIEW", Instant.now(), null, 1, false, false);
     }
 
     private String redisKey() {

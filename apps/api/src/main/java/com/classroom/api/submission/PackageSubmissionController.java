@@ -111,7 +111,8 @@ public final class PackageSubmissionController {
       String answerJson = toJson(answers);
       SubmissionEntity submission = new SubmissionEntity(
           UUID.randomUUID(), classroom.id(), packageId, user.id(), 1, answerJson,
-          "RECEIVED", null, null, "PENDING", Instant.now(), null);
+          "RECEIVED", null, null, "PENDING", Instant.now(), null,
+          SheetAnswerFormatter.extractGroupNumber(user.displayName()), false, false);
       if (winnerSubmission) {
         buzzDeadlineService.saveWinnerSubmission(submission, round);
       } else {
@@ -128,7 +129,7 @@ public final class PackageSubmissionController {
             if (item.targetCell() != null) {
               values.put(
                   item.targetCell(),
-                  SheetAnswerFormatter.format(answers.get(item.id()), user.displayName()));
+                  SheetAnswerFormatter.format(answers.get(item.id()), submission.groupNumber()));
             }
           }
           try {
@@ -184,7 +185,7 @@ public final class PackageSubmissionController {
         }
         valuesByCell.put(item.targetCell(), SheetAnswerFormatter.format(
             String.valueOf(answer),
-            user == null ? submission.userId().toString() : user.displayName()));
+            submission.groupNumber()));
       }
       try {
         sheetsSyncService.updateCells(config.sheetId(), valuesByCell);

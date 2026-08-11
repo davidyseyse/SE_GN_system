@@ -38,10 +38,10 @@ public final class SmokeTest {
     } catch (IllegalArgumentException expected) {
       // Expected.
     }
-    if (!"1233(6)".equals(SheetAnswerFormatter.format("1233", "2 / 第6組"))) {
+    if (!"1233_G6".equals(SheetAnswerFormatter.format("1233", "2 / 第6組"))) {
       throw new IllegalStateException("Google Sheets answer formatting failed");
     }
-    if (!"4455(2)".equals(SheetAnswerFormatter.format("4455", "第2組"))) {
+    if (!"4455_G2".equals(SheetAnswerFormatter.format("4455", "第2組"))) {
       throw new IllegalStateException("Legacy display-name answer formatting failed");
     }
     System.out.println("Smoke test passed. API_PORT=" + port + ", JWT=" + token.substring(0, Math.min(token.length(), 24)) + "...");

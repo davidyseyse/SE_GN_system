@@ -8,6 +8,7 @@ import com.classroom.api.contract.QuestionType;
 import com.classroom.api.contract.Role;
 import com.classroom.api.data.model.ClassroomEntity;
 import com.classroom.api.data.model.QuestionEntity;
+import com.classroom.api.data.model.QuestionItemEntity;
 import com.classroom.api.data.model.ScoreRecordEntity;
 import com.classroom.api.data.model.SheetConfigEntity;
 import com.classroom.api.data.model.SubmissionEntity;
@@ -15,6 +16,7 @@ import com.classroom.api.data.model.UserEntity;
 import com.classroom.api.data.repository.BuzzRoundRepository;
 import com.classroom.api.data.repository.ClassroomRepository;
 import com.classroom.api.data.repository.QuestionRepository;
+import com.classroom.api.data.repository.QuestionItemRepository;
 import com.classroom.api.data.repository.ScoreRepository;
 import com.classroom.api.data.repository.SheetConfigRepository;
 import com.classroom.api.data.repository.SubmissionRepository;
@@ -22,12 +24,15 @@ import com.classroom.api.data.repository.UserRepository;
 import com.classroom.api.http.HttpHandlerFunction;
 import com.classroom.api.http.HttpResponses;
 import com.classroom.api.realtime.RealtimeEventBroker;
+import com.classroom.api.question.QuestionPackageService;
 import com.classroom.api.score.ClassroomScoringPolicy;
 import com.classroom.api.sheets.GoogleSheetsSyncService;
 import com.classroom.api.sheets.SheetAnswerFormatter;
 import com.classroom.api.util.JsonMapParser;
+import com.classroom.api.util.JsonParser;
 import java.time.Instant;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -44,6 +49,8 @@ public final class SubmissionController {
   private final GoogleSheetsSyncService googleSheetsSyncService;
   private final BuzzRoundRepository buzzRoundRepository;
   private final BuzzDeadlineService buzzDeadlineService;
+  private final QuestionItemRepository questionItemRepository;
+  private final QuestionPackageService questionPackageService;
 
   public SubmissionController(
       AuthorizationGuard authorizationGuard,
@@ -56,7 +63,9 @@ public final class SubmissionController {
       RealtimeEventBroker eventBroker,
       GoogleSheetsSyncService googleSheetsSyncService,
       BuzzRoundRepository buzzRoundRepository,
-      BuzzDeadlineService buzzDeadlineService
+      BuzzDeadlineService buzzDeadlineService,
+      QuestionItemRepository questionItemRepository,
+      QuestionPackageService questionPackageService
   ) {
     this.authorizationGuard = authorizationGuard;
     this.classroomRepository = classroomRepository;
@@ -69,6 +78,8 @@ public final class SubmissionController {
     this.googleSheetsSyncService = googleSheetsSyncService;
     this.buzzRoundRepository = buzzRoundRepository;
     this.buzzDeadlineService = buzzDeadlineService;
+    this.questionItemRepository = questionItemRepository;
+    this.questionPackageService = questionPackageService;
   }
 
   public HttpHandlerFunction submitHandler() {
@@ -106,7 +117,10 @@ public final class SubmissionController {
           decision.awardedScore(),
           decision.reviewStatus(),
           now,
-          decision.reviewStatus() == null ? now : null
+          decision.reviewStatus() == null ? now : null,
+          SheetAnswerFormatter.extractGroupNumber(user.displayName()),
+          false,
+          false
       );
       if (winnerSubmission) {
         buzzDeadlineService.saveWinnerSubmission(submission, roundNumber);
@@ -169,6 +183,9 @@ public final class SubmissionController {
           .stream()
           .map(submission -> {
             UserEntity user = userRepository.findById(submission.userId());
+            Integer groupNumber = submission.groupNumber() != null
+                ? submission.groupNumber()
+                : SheetAnswerFormatter.extractGroupNumber(user == null ? null : user.displayName());
             return Map.<String, Object>of(
                 "submissionId", submission.id().toString(),
                 "questionId", submission.questionId().toString(),
@@ -176,7 +193,10 @@ public final class SubmissionController {
                 "isOwnSubmission", submission.userId().equals(requester.id()),
                 "displayName", user == null ? submission.userId().toString() : user.displayName(),
                 "answer", submission.submittedAnswer(),
-                "reviewStatus", submission.reviewStatus() == null ? "" : submission.reviewStatus()
+                "reviewStatus", submission.reviewStatus() == null ? "" : submission.reviewStatus(),
+                "groupNumber", groupNumber == null ? "" : groupNumber,
+                "enteredByTeacher", submission.enteredByTeacher(),
+                "groupChallenged", submission.groupChallenged()
             );
           })
           .toList();
@@ -212,7 +232,10 @@ public final class SubmissionController {
           awardedScore,
           "REVIEWED",
           submission.submittedAt(),
-          Instant.now()
+          Instant.now(),
+          submission.groupNumber(),
+          submission.enteredByTeacher(),
+          submission.groupChallenged()
       );
       submissionRepository.updateReview(reviewed);
 
@@ -249,6 +272,13 @@ public final class SubmissionController {
       Map<String, String> request = JsonMapParser.parseObject(exchange.readRequestBody());
       UUID submissionId = UUID.fromString(request.getOrDefault("submissionId", ""));
       String answer = request.getOrDefault("answer", "");
+      int groupNumber;
+      try {
+        groupNumber = Integer.parseInt(request.getOrDefault("groupNumber", "0"));
+      } catch (NumberFormatException exception) {
+        throw new IllegalArgumentException("groupNumber must be a positive integer");
+      }
+      if (groupNumber <= 0) throw new IllegalArgumentException("groupNumber must be a positive integer");
       SubmissionEntity submission = submissionRepository.findById(submissionId);
       if (submission == null) {
         throw new IllegalArgumentException("Submission not found");
@@ -266,13 +296,16 @@ public final class SubmissionController {
           submission.awardedScore(),
           submission.reviewStatus(),
           submission.submittedAt(),
-          submission.reviewedAt()
+          submission.reviewedAt(),
+          groupNumber,
+          submission.enteredByTeacher(),
+          true
       );
       submissionRepository.updateAnswer(updated);
 
       QuestionEntity question = questionRepository.findById(submission.classroomId(), submission.questionId());
       UserEntity user = userRepository.findById(submission.userId());
-      syncSubmissionToSheet(question, user, updated);
+      SheetSyncOutcome syncOutcome = syncSubmissionToSheet(question, user, updated);
       ClassroomEntity classroom = classroomRepository.findById(updated.classroomId());
       eventBroker.publish(classroom.classroomCode(), "SUBMISSION_UPDATED", Map.of(
           "submissionId", updated.id().toString(),
@@ -282,7 +315,69 @@ public final class SubmissionController {
 
       HttpResponses.json(exchange, 200, Map.of(
           "submissionId", updated.id().toString(),
-          "answer", updated.submittedAnswer()
+          "answer", updated.submittedAnswer(),
+          "groupNumber", updated.groupNumber(),
+          "syncStatus", syncOutcome.status(),
+          "syncError", syncOutcome.error()
+      ));
+    };
+  }
+
+  public HttpHandlerFunction createManualAnswerHandler() {
+    return exchange -> {
+      AuthContext authContext = authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
+      Map<String, String> request = JsonMapParser.parseObject(exchange.readRequestBody());
+      ClassroomEntity classroom = requireClassroom(request.get("classroomCode"));
+      QuestionEntity question = requireQuestion(classroom.id(), request.get("questionId"));
+      if (QuestionState.valueOf(question.state()) != QuestionState.LOCKED) {
+        throw new IllegalArgumentException("Manual answers are allowed only after the question is stopped");
+      }
+      int groupNumber;
+      try {
+        groupNumber = Integer.parseInt(request.getOrDefault("groupNumber", "0"));
+      } catch (NumberFormatException exception) {
+        throw new IllegalArgumentException("groupNumber must be a positive integer");
+      }
+      if (groupNumber <= 0) throw new IllegalArgumentException("groupNumber must be a positive integer");
+      UserEntity actor = requireUser(authContext.subject());
+      int roundNumber = QuestionType.valueOf(question.type()) == QuestionType.BUZZ
+          ? buzzRoundRepository.current(question.id()) : 0;
+      if (!submissionRepository.listByQuestionAndRound(question.id(), roundNumber).isEmpty()) {
+        throw new IllegalArgumentException("A current answer already exists");
+      }
+      SubmissionEntity submission = new SubmissionEntity(
+          UUID.randomUUID(), classroom.id(), question.id(), actor.id(), 1,
+          request.getOrDefault("answer", ""), "RECEIVED", null, null,
+          "PENDING_REVIEW", Instant.now(), null, groupNumber, true, true);
+      submissionRepository.save(submission, roundNumber);
+      syncSubmissionToSheet(question, actor, submission);
+      eventBroker.publish(classroom.classroomCode(), "SUBMISSION_CREATED", Map.of(
+          "submissionId", submission.id().toString(),
+          "questionId", question.id().toString(),
+          "userId", actor.id().toString()
+      ));
+      HttpResponses.json(exchange, 200, Map.of(
+          "submissionId", submission.id().toString(),
+          "answer", submission.submittedAnswer(),
+          "groupNumber", submission.groupNumber()
+      ));
+    };
+  }
+
+  public HttpHandlerFunction retryAnswerSyncHandler() {
+    return exchange -> {
+      authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
+      Map<String, String> request = JsonMapParser.parseObject(exchange.readRequestBody());
+      UUID submissionId = UUID.fromString(request.getOrDefault("submissionId", ""));
+      SubmissionEntity submission = submissionRepository.findById(submissionId);
+      if (submission == null) throw new IllegalArgumentException("Submission not found");
+      QuestionEntity question = questionRepository.findById(submission.classroomId(), submission.questionId());
+      UserEntity user = userRepository.findById(submission.userId());
+      SheetSyncOutcome outcome = syncSubmissionToSheet(question, user, submission);
+      HttpResponses.json(exchange, 200, Map.of(
+          "submissionId", submission.id().toString(),
+          "syncStatus", outcome.status(),
+          "syncError", outcome.error()
       ));
     };
   }
@@ -364,24 +459,52 @@ public final class SubmissionController {
     return user;
   }
 
-  private void syncSubmissionToSheet(QuestionEntity question, UserEntity user, SubmissionEntity submission) {
-    Map<String, String> settings = JsonMapParser.parseObject(question.publicationSettings());
-    String sheetConfigId = settings.getOrDefault("sheetConfigId", "").replace("\"", "").trim();
-    String targetCell = settings.getOrDefault("targetCell", "").replace("\"", "").trim();
-    if (sheetConfigId.isEmpty() || targetCell.isEmpty()) {
-      return;
+  private SheetSyncOutcome syncSubmissionToSheet(QuestionEntity question, UserEntity user, SubmissionEntity submission) {
+    try {
+      Map<String, String> settings = JsonMapParser.parseObject(question.publicationSettings());
+      String sheetConfigId = settings.getOrDefault("sheetConfigId", "").replace("\"", "").trim();
+      UUID persistedSheetConfigId = questionPackageService.findSheetConfigId(question.id());
+      if (persistedSheetConfigId != null) sheetConfigId = persistedSheetConfigId.toString();
+      String targetCell = settings.getOrDefault("targetCell", "").replace("\"", "").trim();
+      if (sheetConfigId.isEmpty()) return new SheetSyncOutcome("NOT_REQUIRED", "");
+      SheetConfigEntity config = sheetConfigRepository.findById(UUID.fromString(sheetConfigId));
+      if (config == null) throw new IllegalArgumentException("Sheet configuration not found");
+      List<QuestionItemEntity> items = questionItemRepository.listByQuestionId(question.id());
+      boolean synchronizedToSheet;
+      if (!items.isEmpty()) {
+        Object parsed = JsonParser.parse(submission.submittedAnswer());
+        if (!(parsed instanceof Map<?, ?> answers)) {
+          throw new IllegalArgumentException("Submission does not contain package answers");
+        }
+        Map<String, String> valuesByCell = new LinkedHashMap<>();
+        for (QuestionItemEntity item : items) {
+          Object answer = answers.get(item.id().toString());
+          if (item.targetCell() != null && answer != null) {
+            valuesByCell.put(item.targetCell(), SheetAnswerFormatter.format(String.valueOf(answer), submission.groupNumber()));
+          }
+        }
+        synchronizedToSheet = googleSheetsSyncService.updateCells(config.sheetId(), valuesByCell);
+      } else if (!targetCell.isEmpty()) {
+        synchronizedToSheet = googleSheetsSyncService.updateCell(config.sheetId(), targetCell,
+            SheetAnswerFormatter.format(submission.submittedAnswer(), submission.groupNumber()));
+      } else {
+        return new SheetSyncOutcome("NOT_REQUIRED", "");
+      }
+      if (!synchronizedToSheet) {
+        throw new IllegalStateException("Google Sheets credentials are not configured");
+      }
+      submissionRepository.updateSheetSync(submission.id(), "SYNCED", null);
+      return new SheetSyncOutcome("SYNCED", "");
+    } catch (RuntimeException exception) {
+      String error = exception.getMessage() == null ? "Google Sheets synchronization failed" : exception.getMessage();
+      submissionRepository.updateSheetSync(submission.id(), "RETRYABLE", error);
+      return new SheetSyncOutcome("RETRYABLE", error);
     }
-
-    SheetConfigEntity config = sheetConfigRepository.findById(UUID.fromString(sheetConfigId));
-    if (config == null) {
-      return;
-    }
-
-    String answerValue = submission.submittedAnswer();
-    String syncValue = SheetAnswerFormatter.format(answerValue, user.displayName());
-    googleSheetsSyncService.updateCell(config.sheetId(), targetCell, syncValue);
   }
 
   private record SubmissionDecision(Boolean isCorrect, Integer awardedScore, String reviewStatus) {
+  }
+
+  private record SheetSyncOutcome(String status, String error) {
   }
 }

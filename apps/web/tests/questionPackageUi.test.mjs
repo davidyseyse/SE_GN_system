@@ -40,6 +40,21 @@ test("teacher configures a positive whole-number answer limit instead of a hard-
   assert.doesNotMatch(teacherSource, /answerTimeLimitSeconds:\s*30/);
 });
 
+test("teacher edits current answers inside the question card and removes the legacy review panel", () => {
+  assert.doesNotMatch(teacherSource, /\/api\/reports\/submissions/);
+  assert.doesNotMatch(teacherSource, /selectedQuestionId/);
+  assert.match(teacherSource, /editingGroupNumber/);
+  assert.match(teacherSource, /updateEditingPackageAnswer/);
+  assert.match(teacherSource, /handleCreateManualAnswer/);
+  assert.match(teacherSource, /questionState === "LOCKED" && currentAnswers\.length === 0/);
+  assert.match(teacherSource, />修改答案</);
+  assert.match(teacherSource, /parsePackageAnswers\(editingAnswer\)\?\.\[item\.id\]/);
+  assert.match(teacherSource, /formatTeacherAnswerAttribution/);
+  assert.match(teacherSource, /\/api\/submissions\/answer\/retry/);
+  assert.match(teacherSource, /答案已儲存，但 Google Sheets 同步失敗/);
+  assert.match(teacherSource, />重試 Google Sheets 同步</);
+});
+
 test("student package uses one buzz action, item-keyed answers, and no event feed", () => {
   assert.match(studentSource, /items\.map\(\(item\) => \(\s*<label key=\{item\.id\}>/);
   assert.match(studentSource, /submitPackageAnswers/);

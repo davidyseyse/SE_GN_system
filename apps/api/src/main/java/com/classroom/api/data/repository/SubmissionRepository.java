@@ -34,8 +34,8 @@ public final class SubmissionRepository {
 
   public void save(Connection connection, SubmissionEntity submission, int roundNumber) {
     String sql = """
-        INSERT INTO submissions (id, classroom_id, question_id, user_id, attempt_number, submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, round_number)
-        VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO submissions (id, classroom_id, question_id, user_id, attempt_number, submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, round_number, group_number, entered_by_teacher, group_challenged)
+        VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """;
     try (PreparedStatement statement = connection.prepareStatement(sql)) {
       statement.setObject(1, submission.id());
@@ -51,6 +51,9 @@ public final class SubmissionRepository {
       statement.setTimestamp(11, SqlTime.from(submission.submittedAt()));
       statement.setTimestamp(12, SqlTime.from(submission.reviewedAt()));
       statement.setInt(13, roundNumber);
+      statement.setObject(14, submission.groupNumber());
+      statement.setBoolean(15, submission.enteredByTeacher());
+      statement.setBoolean(16, submission.groupChallenged());
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to save submission", exception);
@@ -59,7 +62,7 @@ public final class SubmissionRepository {
 
   public List<SubmissionEntity> listByQuestionId(UUID questionId) {
     String sql = """
-        SELECT id, classroom_id, question_id, user_id, attempt_number, submitted_answer::text, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at
+        SELECT id, classroom_id, question_id, user_id, attempt_number, submitted_answer::text, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, group_number, entered_by_teacher, group_challenged
         FROM submissions
         WHERE question_id = ?
         ORDER BY submitted_at ASC
@@ -82,7 +85,10 @@ public final class SubmissionRepository {
             (Integer) resultSet.getObject("awarded_score"),
             resultSet.getString("review_status"),
             resultSet.getTimestamp("submitted_at").toInstant(),
-            resultSet.getTimestamp("reviewed_at") == null ? null : resultSet.getTimestamp("reviewed_at").toInstant()
+            resultSet.getTimestamp("reviewed_at") == null ? null : resultSet.getTimestamp("reviewed_at").toInstant(),
+            (Integer) resultSet.getObject("group_number"),
+            resultSet.getBoolean("entered_by_teacher"),
+            resultSet.getBoolean("group_challenged")
         ));
       }
       return results;
@@ -93,7 +99,7 @@ public final class SubmissionRepository {
 
   public List<SubmissionEntity> listByQuestionAndRound(UUID questionId, int roundNumber) {
     String sql = """
-        SELECT id, classroom_id, question_id, user_id, attempt_number, submitted_answer #>> '{}' AS submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at
+        SELECT id, classroom_id, question_id, user_id, attempt_number, submitted_answer #>> '{}' AS submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, group_number, entered_by_teacher, group_challenged
         FROM submissions
         WHERE question_id = ? AND round_number = ?
         ORDER BY submitted_at ASC
@@ -138,7 +144,7 @@ public final class SubmissionRepository {
 
   public SubmissionEntity findById(UUID submissionId) {
     String sql = """
-        SELECT id, classroom_id, question_id, user_id, attempt_number, submitted_answer::text, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at
+        SELECT id, classroom_id, question_id, user_id, attempt_number, submitted_answer::text, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, group_number, entered_by_teacher, group_challenged
         FROM submissions
         WHERE id = ?
         """;
@@ -177,13 +183,15 @@ public final class SubmissionRepository {
   public void updateAnswer(SubmissionEntity submission) {
     String sql = """
         UPDATE submissions
-        SET submitted_answer = CAST(? AS jsonb)
+        SET submitted_answer = CAST(? AS jsonb), group_number = ?, group_challenged = ?
         WHERE id = ?
         """;
     try (Connection connection = database.openConnection();
          PreparedStatement statement = connection.prepareStatement(sql)) {
       statement.setString(1, JsonValue.normalize(submission.submittedAnswer()));
-      statement.setObject(2, submission.id());
+      statement.setObject(2, submission.groupNumber());
+      statement.setBoolean(3, submission.groupChallenged());
+      statement.setObject(4, submission.id());
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to update submission answer", exception);
@@ -233,7 +241,10 @@ public final class SubmissionRepository {
         (Integer) resultSet.getObject("awarded_score"),
         resultSet.getString("review_status"),
         resultSet.getTimestamp("submitted_at").toInstant(),
-        resultSet.getTimestamp("reviewed_at") == null ? null : resultSet.getTimestamp("reviewed_at").toInstant()
+        resultSet.getTimestamp("reviewed_at") == null ? null : resultSet.getTimestamp("reviewed_at").toInstant(),
+        (Integer) resultSet.getObject("group_number"),
+        resultSet.getBoolean("entered_by_teacher"),
+        resultSet.getBoolean("group_challenged")
     );
   }
 }

@@ -10,9 +10,22 @@ public final class SheetAnswerFormatter {
   }
 
   public static String format(String answer, String displayName) {
+    return format(answer, extractGroupNumber(displayName));
+  }
+
+  public static String format(String answer, Integer groupNumber) {
     String safeAnswer = answer == null ? "" : answer;
+    return groupNumber == null || groupNumber <= 0 ? safeAnswer : safeAnswer + "_G" + groupNumber;
+  }
+
+  public static Integer extractGroupNumber(String displayName) {
     String group = extractGroup(displayName);
-    return group.isEmpty() ? safeAnswer : safeAnswer + "(" + group + ")";
+    try {
+      int value = Integer.parseInt(group);
+      return value > 0 ? value : null;
+    } catch (NumberFormatException exception) {
+      return null;
+    }
   }
 
   static String extractGroup(String displayName) {

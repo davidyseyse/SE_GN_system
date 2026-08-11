@@ -128,6 +128,8 @@ function Start-ApiProcess {
   $startInfo.WorkingDirectory = $ProjectRoot
   $startInfo.UseShellExecute = $false
   $startInfo.CreateNoWindow = $true
+  $startInfo.Environment["API_PORT"] = [string]$script:ApiTestPort
+  $startInfo.Environment["WEBSOCKET_PORT"] = [string]$script:ApiTestWebSocketPort
 
   $process = New-Object System.Diagnostics.Process
   $process.StartInfo = $startInfo

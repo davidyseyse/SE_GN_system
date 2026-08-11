@@ -85,6 +85,9 @@ export type SubmittedAnswerView = {
   displayName: string;
   answer: string;
   reviewStatus: string;
+  groupNumber: number | "";
+  enteredByTeacher: boolean;
+  groupChallenged: boolean;
 };
 
 async function request<T>(path: string, init?: RequestInit, token?: string): Promise<T> {

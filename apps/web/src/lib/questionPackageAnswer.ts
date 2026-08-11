@@ -26,3 +26,14 @@ export function formatPackageAnswer(answer: string, items: QuestionItemView[]): 
     .map((item) => `${item.prompt}:${answers[item.id] ?? ""}`)
     .join(",");
 }
+
+export function formatTeacherAnswerAttribution(
+  displayName: string,
+  groupNumber: number | "",
+  enteredByTeacher: boolean,
+  groupChallenged: boolean
+): string {
+  const challenge = groupNumber === "" ? "挑戰：未指定組別" : `挑戰：第${groupNumber}組`;
+  if (enteredByTeacher) return challenge;
+  return groupChallenged ? `${displayName}　${challenge}` : displayName;
+}

@@ -85,7 +85,7 @@ try {
 
   $testSourceRoot = Join-Path $projectRoot "src\test\java"
   $testSources = @(Get-ChildItem -Path $testSourceRoot -Recurse -Filter *.java | ForEach-Object { $_.FullName })
-  if ($testSources.Count -gt 0) {
+  if ($testSources.Count -gt 0 -and $env:SKIP_API_UNIT_TESTS -ne "1") {
     $mainSourceRoot = Join-Path $projectRoot "src\main\java"
     $mainSources = @(Get-ChildItem -Path $mainSourceRoot -Recurse -Filter *.java | ForEach-Object { $_.FullName })
     $testClassRoot = Join-Path $env:TEMP "classroom-api\test-classes"
@@ -349,6 +349,16 @@ try {
     )
   }
   Assert-True ($secondPackageSubmission.StatusCode -eq 200) "Second package round submission failed"
+  $packageAnswerObject = @{}
+  $packageAnswerObject[[string]$packageItems[0].id] = "Updated one"
+  $packageAnswerObject[[string]$packageItems[1].id] = "Updated two"
+  $packageTeacherUpdate = Invoke-ApiJson -Method "POST" -Path "/api/submissions/answer" -Token $teacherToken -Body @{
+    submissionId = [string]$secondPackageSubmission.Body.submissionId
+    answer = ($packageAnswerObject | ConvertTo-Json -Compress)
+    groupNumber = 6
+  }
+  Assert-True ($packageTeacherUpdate.StatusCode -eq 200) "Teacher package answer update failed"
+  Assert-True (@("SYNCED", "NOT_REQUIRED", "RETRYABLE") -contains [string]$packageTeacherUpdate.Body.syncStatus) "Package update omitted Sheets sync status"
 
   $firstSubmission = Invoke-ApiJson -Method "POST" -Path "/api/submissions" -Token $studentOneToken -Body @{
     classroomCode = $classroomCode
@@ -381,6 +391,30 @@ try {
     $expectedOwnedAnswerCount = if ($token -eq $studentOneToken -or $token -eq $studentTwoToken) { 1 } else { 0 }
     Assert-True ($ownedAnswerCount -eq $expectedOwnedAnswerCount) "Current answers did not identify requester ownership correctly"
   }
+  $invalidGroupUpdate = Invoke-ApiJson -Method "POST" -Path "/api/submissions/answer" -Token $teacherToken -Body @{
+    submissionId = [string]$firstSubmission.Body.submissionId
+    answer = "Teacher corrected"
+    groupNumber = 0
+  }
+  Assert-True ($invalidGroupUpdate.StatusCode -eq 400) "Zero group number should be rejected"
+  $validGroupUpdate = Invoke-ApiJson -Method "POST" -Path "/api/submissions/answer" -Token $teacherToken -Body @{
+    submissionId = [string]$firstSubmission.Body.submissionId
+    answer = "Teacher corrected"
+    groupNumber = 7
+  }
+  Assert-True ($validGroupUpdate.StatusCode -eq 200) "Teacher answer/group update failed"
+  Assert-True (@("SYNCED", "NOT_REQUIRED", "RETRYABLE") -contains [string]$validGroupUpdate.Body.syncStatus) "Answer update omitted Sheets sync status"
+  if ([string]$validGroupUpdate.Body.syncStatus -eq "RETRYABLE") {
+    $retryAnswerSync = Invoke-ApiJson -Method "POST" -Path "/api/submissions/answer/retry" -Token $teacherToken -Body @{
+      submissionId = [string]$firstSubmission.Body.submissionId
+    }
+    Assert-True ($retryAnswerSync.StatusCode -eq 200) "Retrying persisted answer sync failed"
+    Assert-True (@("SYNCED", "NOT_REQUIRED", "RETRYABLE") -contains [string]$retryAnswerSync.Body.syncStatus) "Retry omitted Sheets sync status"
+  }
+  $updatedAnswers = Invoke-ApiJson -Method "GET" -Path "/api/submissions?classroomCode=$classroomCode&questionId=$questionId" -Token $teacherToken -Body $null
+  $updatedAnswer = @($updatedAnswers.Body.answers | Where-Object { $_.submissionId -eq [string]$firstSubmission.Body.submissionId })[0]
+  Assert-True ([int]$updatedAnswer.groupNumber -eq 7) "Answer group snapshot was not updated"
+  Assert-True ([string]$updatedAnswer.displayName -eq "Student One") "Editing the answer group changed student identity"
   $otherClassroom = Invoke-ApiJson -Method "POST" -Path "/api/classrooms" -Token $teacherToken -Body @{
     name = "Other Validation Room"
     participationSettings = '{"buzzBonus":5,"wrongAnswerPenalty":2}'
@@ -394,6 +428,36 @@ try {
 
   $crossClassroomAnswers = Invoke-ApiJson -Method "GET" -Path "/api/submissions?classroomCode=$($otherClassroom.Body.classroom.code)&questionId=$questionId" -Token $teacherToken -Body $null
   Assert-True ($crossClassroomAnswers.StatusCode -eq 400) "Cross-classroom question lookup should be rejected"
+
+  $manualQuestion = Invoke-ApiJson -Method "POST" -Path "/api/questions" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode
+    prompt = "Manual answer validation"
+    type = "BUZZ"
+    score = 0
+    answerKey = ""
+    publicationSettings = (@{ showAnswer = $false; sheetConfigId = $sheetConfigId; targetCell = "D1" } | ConvertTo-Json -Compress)
+    answerTimeLimitSeconds = 30
+  }
+  Assert-True ($manualQuestion.StatusCode -eq 201) "Manual-answer question setup failed"
+  $manualQuestionId = [string]$manualQuestion.Body.question.id
+  $manualWhileOpen = Invoke-ApiJson -Method "POST" -Path "/api/submissions/manual" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode; questionId = $manualQuestionId; answer = "manual"; groupNumber = 3
+  }
+  Assert-True ($manualWhileOpen.StatusCode -eq 400) "Manual answer should be rejected before the question is stopped"
+  foreach ($targetState in @("BUZZ_OPEN", "LOCKED")) {
+    $manualTransition = Invoke-ApiJson -Method "POST" -Path "/api/questions/state" -Token $teacherToken -Body @{
+      classroomCode = $classroomCode; questionId = $manualQuestionId; targetState = $targetState
+    }
+    Assert-True ($manualTransition.StatusCode -eq 200) "Manual-answer question transition failed"
+  }
+  $manualCreated = Invoke-ApiJson -Method "POST" -Path "/api/submissions/manual" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode; questionId = $manualQuestionId; answer = "manual"; groupNumber = 3
+  }
+  Assert-True ($manualCreated.StatusCode -eq 200) "Stopped-round manual answer could not be created"
+  $manualAnswers = Invoke-ApiJson -Method "GET" -Path "/api/submissions?classroomCode=$classroomCode&questionId=$manualQuestionId" -Token $teacherToken -Body $null
+  Assert-True (@($manualAnswers.Body.answers).Count -eq 1) "Manual answer was not current-round visible"
+  Assert-True ($manualAnswers.Body.answers[0].enteredByTeacher -eq $true) "Manual answer provenance was not retained"
+  Assert-True ([int]$manualAnswers.Body.answers[0].groupNumber -eq 3) "Manual answer group was not retained"
 
   $buzzQuestion = Invoke-ApiJson -Method "POST" -Path "/api/questions" -Token $teacherToken -Body @{
     classroomCode = $classroomCode
