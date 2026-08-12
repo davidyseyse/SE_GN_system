@@ -1,6 +1,9 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 export function AppShell() {
+  const location = useLocation();
+  const isTeacherArea = location.pathname.startsWith("/teacher");
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -10,7 +13,11 @@ export function AppShell() {
         </div>
         <div className="topbar-actions">
           <nav className="topnav">
-            <NavLink to="/login" className={({ isActive }) => isActive ? "active" : ""}>登入</NavLink>
+            {isTeacherArea ? (
+              <NavLink to="/teacher/login" className={({ isActive }) => isActive ? "active" : ""}>教師登入</NavLink>
+            ) : (
+              <NavLink to="/student/login" className={({ isActive }) => isActive ? "active" : ""}>學生登入</NavLink>
+            )}
           </nav>
         </div>
       </header>

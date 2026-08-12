@@ -10,7 +10,7 @@ type RequireRoleProps = {
 
 export function RequireRole({ role, children }: RequireRoleProps) {
   if (!hasSession(role)) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to={role === "TEACHER" ? "/teacher/login" : "/student/login"} replace />;
   }
 
   return children;

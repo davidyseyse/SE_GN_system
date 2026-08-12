@@ -34,8 +34,8 @@ public final class SubmissionRepository {
 
   public void save(Connection connection, SubmissionEntity submission, int roundNumber) {
     String sql = """
-        INSERT INTO submissions (id, classroom_id, question_id, user_id, attempt_number, submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, round_number, group_number, entered_by_teacher, group_challenged)
-        VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO submissions (id, classroom_id, question_id, user_id, attempt_number, submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, round_number, group_number, entered_by_teacher, group_challenged, buzz_winner)
+        VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """;
     try (PreparedStatement statement = connection.prepareStatement(sql)) {
       statement.setObject(1, submission.id());
@@ -54,15 +54,44 @@ public final class SubmissionRepository {
       statement.setObject(14, submission.groupNumber());
       statement.setBoolean(15, submission.enteredByTeacher());
       statement.setBoolean(16, submission.groupChallenged());
+      statement.setBoolean(17, submission.buzzWinner());
       statement.executeUpdate();
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to save submission", exception);
     }
   }
 
+  public boolean saveBuzzWinner(Connection connection, SubmissionEntity submission, int roundNumber)
+      throws SQLException {
+    String sql = """
+        INSERT INTO submissions (id, classroom_id, question_id, user_id, attempt_number, submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, round_number, group_number, entered_by_teacher, group_challenged, buzz_winner)
+        VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
+        ON CONFLICT DO NOTHING
+        """;
+    try (PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setObject(1, submission.id());
+      statement.setObject(2, submission.classroomId());
+      statement.setObject(3, submission.questionId());
+      statement.setObject(4, submission.userId());
+      statement.setInt(5, submission.attemptNumber());
+      statement.setString(6, JsonValue.normalize(submission.submittedAnswer()));
+      statement.setString(7, submission.submissionStatus());
+      statement.setObject(8, submission.isCorrect());
+      statement.setObject(9, submission.awardedScore());
+      statement.setString(10, submission.reviewStatus());
+      statement.setTimestamp(11, SqlTime.from(submission.submittedAt()));
+      statement.setTimestamp(12, SqlTime.from(submission.reviewedAt()));
+      statement.setInt(13, roundNumber);
+      statement.setObject(14, submission.groupNumber());
+      statement.setBoolean(15, submission.enteredByTeacher());
+      statement.setBoolean(16, submission.groupChallenged());
+      return statement.executeUpdate() == 1;
+    }
+  }
+
   public List<SubmissionEntity> listByQuestionId(UUID questionId) {
     String sql = """
-        SELECT id, classroom_id, question_id, user_id, attempt_number, submitted_answer::text, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, group_number, entered_by_teacher, group_challenged
+        SELECT id, classroom_id, question_id, user_id, attempt_number, submitted_answer::text, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, group_number, entered_by_teacher, group_challenged, buzz_winner
         FROM submissions
         WHERE question_id = ?
         ORDER BY submitted_at ASC
@@ -88,7 +117,8 @@ public final class SubmissionRepository {
             resultSet.getTimestamp("reviewed_at") == null ? null : resultSet.getTimestamp("reviewed_at").toInstant(),
             (Integer) resultSet.getObject("group_number"),
             resultSet.getBoolean("entered_by_teacher"),
-            resultSet.getBoolean("group_challenged")
+            resultSet.getBoolean("group_challenged"),
+            resultSet.getBoolean("buzz_winner")
         ));
       }
       return results;
@@ -99,7 +129,7 @@ public final class SubmissionRepository {
 
   public List<SubmissionEntity> listByQuestionAndRound(UUID questionId, int roundNumber) {
     String sql = """
-        SELECT id, classroom_id, question_id, user_id, attempt_number, submitted_answer #>> '{}' AS submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, group_number, entered_by_teacher, group_challenged
+        SELECT id, classroom_id, question_id, user_id, attempt_number, submitted_answer #>> '{}' AS submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, group_number, entered_by_teacher, group_challenged, buzz_winner
         FROM submissions
         WHERE question_id = ? AND round_number = ?
         ORDER BY submitted_at ASC
@@ -144,7 +174,7 @@ public final class SubmissionRepository {
 
   public SubmissionEntity findById(UUID submissionId) {
     String sql = """
-        SELECT id, classroom_id, question_id, user_id, attempt_number, submitted_answer::text, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, group_number, entered_by_teacher, group_challenged
+        SELECT id, classroom_id, question_id, user_id, attempt_number, submitted_answer::text, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, group_number, entered_by_teacher, group_challenged, buzz_winner
         FROM submissions
         WHERE id = ?
         """;
@@ -244,7 +274,8 @@ public final class SubmissionRepository {
         resultSet.getTimestamp("reviewed_at") == null ? null : resultSet.getTimestamp("reviewed_at").toInstant(),
         (Integer) resultSet.getObject("group_number"),
         resultSet.getBoolean("entered_by_teacher"),
-        resultSet.getBoolean("group_challenged")
+        resultSet.getBoolean("group_challenged"),
+        resultSet.getBoolean("buzz_winner")
     );
   }
 }

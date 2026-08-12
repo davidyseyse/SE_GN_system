@@ -2,15 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import {
   type QuestionView,
   type SubmittedAnswerView,
+  type ClassroomView,
   batchQuestionAction,
   createClassroom,
   createQuestionPackage,
   createSheetConfig,
+  deleteClassroom,
   deleteSheetConfig,
   getCurrentAnswers,
   getMembers,
   getSummary,
   joinClassroom,
+  listClassrooms,
   listQuestions,
   listSheetConfigs,
   resetBuzz,
@@ -34,8 +37,6 @@ type RealtimeEventView = {
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8080";
-const defaultSettings = "{\"buzzBonus\":5,\"wrongAnswerPenalty\":2,\"showAnswer\":false}";
-
 const allowedQuestionTransitions: Record<string, string[]> = {
   DRAFT: ["READY", "CLOSED"],
   READY: ["BUZZ_OPEN", "ANSWER_OPEN", "CLOSED"],
@@ -88,10 +89,11 @@ export function TeacherDashboardPage() {
   const stored = readSession();
   const teacherToken = stored?.token ?? null;
   const [classroomCode, setClassroomCode] = useState(stored?.classroomCode ?? "");
-  const [resumeClassroomCode, setResumeClassroomCode] = useState(stored?.classroomCode ?? "");
+  const [resumeClassroomCode, setResumeClassroomCode] = useState("");
+  const [teacherClassrooms, setTeacherClassrooms] = useState<ClassroomView[]>([]);
   const [classroomName, setClassroomName] = useState("課堂 A");
+  const [classroomSuccessfulBuzzLimit, setClassroomSuccessfulBuzzLimit] = useState(1);
   const [questionPackageTitle, setQuestionPackageTitle] = useState("");
-  const [answerTimeLimitSeconds, setAnswerTimeLimitSeconds] = useState("30");
   const [questionItems, setQuestionItems] = useState<Array<{ clientId: string; prompt: string; targetCell: string }>>([
     { clientId: crypto.randomUUID(), prompt: "", targetCell: "" }
   ]);
@@ -121,6 +123,7 @@ export function TeacherDashboardPage() {
       return;
     }
     void listSheetConfigs(teacherToken).then((result) => setSheetConfigs(result.configs));
+    void listClassrooms(teacherToken).then((result) => setTeacherClassrooms(result.classrooms));
   }, [teacherToken]);
 
   useEffect(() => {
@@ -129,7 +132,10 @@ export function TeacherDashboardPage() {
     }
     void Promise.all([
       listQuestions(teacherToken, classroomCode).then((result) => setQuestions(result.questions)),
-      getMembers(teacherToken, classroomCode).then((result) => setMembers(result.members as unknown as Array<Record<string, unknown>>)),
+      getMembers(teacherToken, classroomCode).then((result) => {
+        setMembers(result.members as unknown as Array<Record<string, unknown>>);
+        setClassroomSuccessfulBuzzLimit(result.successfulBuzzLimit);
+      }),
       getSummary(teacherToken, classroomCode).then((result) => setSummary(result as unknown as Record<string, unknown>))
     ]);
   }, [teacherToken, classroomCode, lastRealtimeEvent]);
@@ -162,9 +168,19 @@ export function TeacherDashboardPage() {
     if (!teacherToken || !stored) {
       return;
     }
-    const result = await createClassroom(teacherToken, classroomName, defaultSettings);
+    const settings = JSON.stringify({
+      buzzBonus: 5,
+      wrongAnswerPenalty: 2,
+      showAnswer: false
+    });
+    const result = await createClassroom(teacherToken, classroomName, settings);
+    setClassroomSuccessfulBuzzLimit(1);
     setClassroomCode(result.classroom.code);
     setResumeClassroomCode(result.classroom.code);
+    setTeacherClassrooms((current) => [
+      result.classroom,
+      ...current.filter((classroom) => classroom.id !== result.classroom.id)
+    ]);
     writeSession({
       ...stored,
       classroomCode: result.classroom.code,
@@ -186,6 +202,36 @@ export function TeacherDashboardPage() {
       classroomId: joined.classroom.id
     });
     setNotice(`已重返課堂 ${joined.classroom.code}。`);
+  }
+
+  async function handleDeleteClassroom() {
+    if (!teacherToken || !stored || !resumeClassroomCode) {
+      return;
+    }
+    const selected = teacherClassrooms.find((classroom) => classroom.code === resumeClassroomCode);
+    const description = selected ? `${selected.name}（${selected.code}）` : resumeClassroomCode;
+    if (!window.confirm(`確定要刪除課堂 ${description}？課堂內的題目與作答紀錄也會刪除。`)) {
+      return;
+    }
+
+    const deletedCode = resumeClassroomCode;
+    await deleteClassroom(teacherToken, deletedCode);
+    setTeacherClassrooms((current) => current.filter((classroom) => classroom.code !== deletedCode));
+    setResumeClassroomCode("");
+    if (classroomCode === deletedCode) {
+      setClassroomCode("");
+      setQuestions([]);
+      setAnswersByQuestionId({});
+      setMembers([]);
+      setSummary(null);
+      writeSession({
+        token: stored.token,
+        userId: stored.userId,
+        displayName: stored.displayName,
+        role: stored.role
+      });
+    }
+    setNotice(`課堂 ${deletedCode} 已刪除。`);
   }
 
   async function handleCreateSheetConfig() {
@@ -215,21 +261,14 @@ export function TeacherDashboardPage() {
     if (!teacherToken || !classroomCode) {
       return;
     }
-    const configuredAnswerTimeLimitSeconds = Number(answerTimeLimitSeconds);
-    if (!Number.isInteger(configuredAnswerTimeLimitSeconds) || configuredAnswerTimeLimitSeconds <= 0) {
-      setNotice("作答時限必須是正整數秒數。");
-      return;
-    }
     const result = await createQuestionPackage(teacherToken, classroomCode, {
       title: questionPackageTitle,
       sheetConfigId: selectedSheetConfigId,
       items: questionItems.map(({ prompt, targetCell }) => ({ prompt, targetCell })),
-      score: 10,
-      answerTimeLimitSeconds: configuredAnswerTimeLimitSeconds
+      score: 10
     });
     setQuestions((current) => [...current, result.package]);
     setQuestionPackageTitle("");
-    setAnswerTimeLimitSeconds("30");
     setQuestionItems([{ clientId: crypto.randomUUID(), prompt: "", targetCell: "" }]);
     setNotice("題目已建立。");
   }
@@ -419,8 +458,6 @@ export function TeacherDashboardPage() {
   const isQuestionPackageValid = Boolean(
     questionPackageTitle.trim()
     && selectedSheetConfigId
-    && Number.isInteger(Number(answerTimeLimitSeconds))
-    && Number(answerTimeLimitSeconds) > 0
     && questionItems.length > 0
     && questionItems.every((item) =>
       item.prompt.trim() && singleCellPattern.test(item.targetCell.trim())
@@ -433,23 +470,33 @@ export function TeacherDashboardPage() {
       <div className="panel hero-panel">
         <h2>管理主控台面板</h2>
         <p className="muted">
-          目前登入管理者：{stored?.displayName ?? "教師"}。可建立課堂、輸入課堂代碼重返既有課堂、配置 Sheet、綁定題目與維護學生答案。
+          目前登入管理者：{stored?.displayName ?? "教師"}。可建立課堂、選擇既有課堂、配置 Sheet、綁定題目與維護學生答案。
         </p>
-        <div className="inline-form">
+        <div className="classroom-create-form">
           <input value={classroomName} onChange={(event) => setClassroomName(event.target.value)} placeholder="課堂名稱" />
-          <button disabled={!teacherToken} onClick={() => void handleCreateClassroom()}>建立課堂</button>
         </div>
-        <div className="inline-form">
-          <input
+        <div className="classroom-resume-form">
+          <select
+            aria-label="選擇現有課堂"
             value={resumeClassroomCode}
-            onChange={(event) => setResumeClassroomCode(event.target.value.toUpperCase())}
-            placeholder="輸入課堂代碼以重返既有課堂"
-          />
-          <button disabled={!teacherToken} onClick={() => void handleResumeClassroom()}>重返課堂</button>
+            onChange={(event) => setResumeClassroomCode(event.target.value)}
+          >
+            <option value="">請選擇現有課堂</option>
+            {teacherClassrooms.map((classroom) => (
+              <option key={classroom.id} value={classroom.code}>
+                {classroom.name}（{classroom.code}）
+              </option>
+            ))}
+          </select>
         </div>
         <div className="status-strip">
           <span>課堂代碼：{classroomCode || "尚未建立"}</span>
           <span>即時連線：{formatRealtimeStatus(realtime.status)}</span>
+        </div>
+        <div className="classroom-action-row">
+          <button className="hero-action-button hero-action-button-secondary" disabled={!teacherToken} onClick={() => void handleCreateClassroom()}>建立課堂</button>
+          <button className="hero-action-button hero-action-button-secondary" disabled={!teacherToken || !resumeClassroomCode} onClick={() => void handleResumeClassroom()}>重返課堂</button>
+          <button className="hero-action-button danger-button" disabled={!teacherToken || !resumeClassroomCode} onClick={() => void handleDeleteClassroom()}>刪除課堂</button>
         </div>
         <p className="notice">{notice}</p>
       </div>
@@ -496,17 +543,6 @@ export function TeacherDashboardPage() {
               value={questionPackageTitle}
               onChange={(event) => setQuestionPackageTitle(event.target.value)}
               placeholder="題目標題"
-            />
-          </label>
-          <label>
-            作答時限（秒）
-            <input
-              type="number"
-              min="1"
-              step="1"
-              inputMode="numeric"
-              value={answerTimeLimitSeconds}
-              onChange={(event) => setAnswerTimeLimitSeconds(event.target.value)}
             />
           </label>
           {questionItems.map((item, index) => (
@@ -671,6 +707,9 @@ export function TeacherDashboardPage() {
             <li key={String(member.id)}>
               <span>{String(member.userId)}</span>
               <span>{formatPresenceStatus(String(member.presenceStatus))}</span>
+              <span>
+                第{String(member.groupNumber || "-")}組成功搶答：{String(member.groupSuccessfulBuzzCount ?? 0)} / {classroomSuccessfulBuzzLimit > 0 ? classroomSuccessfulBuzzLimit : "不限"}
+              </span>
             </li>
           ))}
         </ul>

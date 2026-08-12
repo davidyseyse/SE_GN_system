@@ -68,6 +68,28 @@ public final class BuzzRepository {
     }
   }
 
+  public BuzzRecordEntity findActiveAttempt(UUID questionId, int roundNumber, UUID userId) {
+    String sql = """
+        SELECT id, classroom_id, question_id, user_id, request_id, receipt_order,
+               received_at, outcome_status, successful, answer_deadline_at
+        FROM buzz_records
+        WHERE question_id = ? AND round_number = ? AND user_id = ?
+          AND active = TRUE AND successful = FALSE
+        ORDER BY receipt_order ASC, received_at ASC
+        LIMIT 1
+        """;
+    try (Connection connection = database.openConnection();
+         PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setObject(1, questionId);
+      statement.setInt(2, roundNumber);
+      statement.setObject(3, userId);
+      ResultSet resultSet = statement.executeQuery();
+      return resultSet.next() ? mapBuzzRecord(resultSet) : null;
+    } catch (SQLException exception) {
+      throw new DatabaseException("Unable to load active buzz attempt", exception);
+    }
+  }
+
   public List<WinnerKey> listOverdueWinnerKeys(int limit) {
     String sql = """
         SELECT br.question_id, br.round_number

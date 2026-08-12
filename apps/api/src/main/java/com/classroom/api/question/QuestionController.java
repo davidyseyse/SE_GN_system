@@ -10,6 +10,7 @@ import com.classroom.api.data.model.QuestionEntity;
 import com.classroom.api.data.model.UserEntity;
 import com.classroom.api.data.repository.ClassroomRepository;
 import com.classroom.api.data.repository.BuzzRoundRepository;
+import com.classroom.api.data.repository.BuzzRepository;
 import com.classroom.api.data.repository.CurrentBuzzStatusRepository;
 import com.classroom.api.data.repository.QuestionRepository;
 import com.classroom.api.data.repository.QuestionItemRepository;
@@ -34,6 +35,7 @@ public final class QuestionController {
   private final RealtimeEventBroker eventBroker;
   private final QuestionStateMachine stateMachine;
   private final BuzzRoundRepository buzzRoundRepository;
+  private final BuzzRepository buzzRepository;
   private final CurrentBuzzStatusRepository currentBuzzStatusRepository;
   private final QuestionLifecycleService lifecycleService;
   private final QuestionItemRepository questionItemRepository;
@@ -46,6 +48,7 @@ public final class QuestionController {
       AuthorizationGuard authorizationGuard,
       RealtimeEventBroker eventBroker,
       BuzzRoundRepository buzzRoundRepository,
+      BuzzRepository buzzRepository,
       CurrentBuzzStatusRepository currentBuzzStatusRepository,
       QuestionLifecycleService lifecycleService,
       QuestionItemRepository questionItemRepository,
@@ -58,6 +61,7 @@ public final class QuestionController {
     this.eventBroker = eventBroker;
     this.stateMachine = new QuestionStateMachine();
     this.buzzRoundRepository = buzzRoundRepository;
+    this.buzzRepository = buzzRepository;
     this.currentBuzzStatusRepository = currentBuzzStatusRepository;
     this.lifecycleService = lifecycleService;
     this.questionItemRepository = questionItemRepository;
@@ -181,6 +185,10 @@ public final class QuestionController {
     return exchange -> {
       AuthContext authContext = authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT, Role.STUDENT);
       ClassroomEntity classroom = requireClassroom(requiredQuery(exchange, "classroomCode"));
+      UserEntity requester = userRepository.findByExternalId(authContext.subject());
+      if (requester == null || !classroomRepository.hasMember(classroom.id(), requester.id())) {
+        throw new SecurityException("User is not a member of this classroom");
+      }
       List<QuestionEntity> questions = questionRepository.listByClassroom(classroom.id());
       Map<UUID, CurrentBuzzStatus> buzzStatuses = currentBuzzStatusRepository.listByClassroom(classroom.id());
       List<Map<String, Object>> payload = questions.stream()
@@ -198,13 +206,16 @@ public final class QuestionController {
                     "targetCell", authContext.role() == Role.STUDENT
                         ? "" : item.targetCell() == null ? "" : item.targetCell()))
                 .toList());
-            serialized.put("roundId", Integer.toString(buzzRoundRepository.current(question.id())));
+            int roundNumber = buzzRoundRepository.current(question.id());
+            serialized.put("roundId", Integer.toString(roundNumber));
+            if (authContext.role() == Role.STUDENT) {
+              var ownAttempt = buzzRepository.findActiveAttempt(question.id(), roundNumber, requester.id());
+              serialized.put("ownBuzzAttemptRecorded", ownAttempt != null);
+            }
             CurrentBuzzStatus buzzStatus = buzzStatuses.get(question.id());
             if (buzzStatus != null) {
               serialized.put("buzzStatus", buzzStatus.buzzStatus());
               serialized.put("winnerExternalUserId", valueOrEmpty(buzzStatus.winnerExternalUserId()));
-              serialized.put("answerDeadlineAt", buzzStatus.answerDeadlineAt() == null
-                  ? "" : buzzStatus.answerDeadlineAt().toString());
               if (authContext.role() != Role.STUDENT) {
                 serialized.put("winnerUserId", buzzStatus.winnerUserId() == null ? "" : buzzStatus.winnerUserId().toString());
                 serialized.put("winnerDisplayName", valueOrEmpty(buzzStatus.winnerDisplayName()));

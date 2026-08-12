@@ -11,6 +11,8 @@ import com.classroom.api.data.repository.UserRepository;
 import com.classroom.api.http.HttpExchangeAdapter;
 import com.classroom.api.http.HttpHandlerFunction;
 import com.classroom.api.http.HttpResponses;
+import com.classroom.api.score.ClassroomScoringPolicy;
+import com.classroom.api.sheets.SheetAnswerFormatter;
 import com.classroom.api.util.JsonMapParser;
 import java.io.IOException;
 import java.time.Instant;
@@ -41,6 +43,7 @@ public final class ClassroomController {
       Map<String, String> request = parseBody(exchange);
       String name = requiredValue(request, "name");
       String participationSettings = request.getOrDefault("participationSettings", "{}");
+      ClassroomScoringPolicy.validateSettings(participationSettings);
 
       UserEntity actor = upsertActor(authContext);
       Instant now = Instant.now();
@@ -65,7 +68,8 @@ public final class ClassroomController {
           authContext.role().name(),
           "ONLINE",
           now,
-          now
+          now,
+          0
       ));
 
       HttpResponses.json(exchange, 201, Map.of(
@@ -75,6 +79,50 @@ public final class ClassroomController {
               "name", classroom.name(),
               "status", classroom.status()
           )
+      ));
+    };
+  }
+
+  public HttpHandlerFunction listClassroomsHandler() {
+    return exchange -> {
+      AuthContext authContext = authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
+      UserEntity actor = upsertActor(authContext);
+      HttpResponses.json(exchange, 200, Map.of(
+          "classrooms", classroomRepository.listByTeacherId(actor.id()).stream()
+              .map(ClassroomController::classroomView)
+              .toList()
+      ));
+    };
+  }
+
+  public HttpHandlerFunction availableClassroomsHandler() {
+    return exchange -> HttpResponses.json(exchange, 200, Map.of(
+        "classrooms", classroomRepository.listAll().stream()
+            .map(ClassroomController::classroomView)
+            .toList()
+    ));
+  }
+
+  public HttpHandlerFunction deleteClassroomHandler() {
+    return exchange -> {
+      AuthContext authContext = authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
+      Map<String, String> request = parseBody(exchange);
+      String classroomCode = requiredValue(request, "classroomCode").toUpperCase();
+      ClassroomEntity classroom = classroomRepository.findByCode(classroomCode);
+      if (classroom == null) {
+        throw new IllegalArgumentException("Classroom not found");
+      }
+
+      UserEntity actor = upsertActor(authContext);
+      if (!classroom.teacherId().equals(actor.id())) {
+        throw new SecurityException("Only the classroom owner can delete this classroom");
+      }
+      if (!classroomRepository.deleteOwnedClassroom(classroom.id(), actor.id())) {
+        throw new IllegalArgumentException("Classroom not found");
+      }
+
+      HttpResponses.json(exchange, 200, Map.of(
+          "deletedClassroomCode", classroom.classroomCode()
       ));
     };
   }
@@ -99,7 +147,8 @@ public final class ClassroomController {
           authContext.role().name(),
           "ONLINE",
           now,
-          now
+          now,
+          0
       ));
 
       HttpResponses.json(exchange, 200, Map.of(
@@ -132,17 +181,29 @@ public final class ClassroomController {
       }
 
       List<ClassroomMemberEntity> members = classroomRepository.listMembers(classroom.id());
+      int successfulBuzzLimit = ClassroomScoringPolicy.fromSettings(
+          classroom.participationSettings()).successfulBuzzLimit();
       HttpResponses.json(exchange, 200, Map.of(
           "classroomId", classroom.id().toString(),
           "classroomCode", classroom.classroomCode(),
-          "members", members.stream().map(member -> Map.of(
-              "id", member.id().toString(),
-              "userId", member.userId().toString(),
-              "role", member.role(),
-              "presenceStatus", member.presenceStatus(),
-              "joinedAt", member.joinedAt().toString(),
-              "lastSeenAt", member.lastSeenAt().toString()
-          )).toList()
+          "successfulBuzzLimit", successfulBuzzLimit,
+          "members", members.stream().map(member -> {
+            UserEntity user = userRepository.findById(member.userId());
+            String displayName = user == null ? "" : user.displayName();
+            Integer groupNumber = SheetAnswerFormatter.extractGroupNumber(displayName);
+            return Map.<String, Object>of(
+                "id", member.id().toString(),
+                "userId", member.userId().toString(),
+                "displayName", displayName,
+                "role", member.role(),
+                "presenceStatus", member.presenceStatus(),
+                "joinedAt", member.joinedAt().toString(),
+                "lastSeenAt", member.lastSeenAt().toString(),
+                "groupNumber", groupNumber == null ? 0 : groupNumber,
+                "groupSuccessfulBuzzCount", groupNumber == null
+                    ? 0 : classroomRepository.globalGroupSuccessfulBuzzCount(groupNumber)
+            );
+          }).toList()
       ));
     };
   }
@@ -193,6 +254,16 @@ public final class ClassroomController {
     );
     userRepository.save(user);
     return user;
+  }
+
+  private static Map<String, Object> classroomView(ClassroomEntity classroom) {
+    return Map.of(
+        "id", classroom.id().toString(),
+        "code", classroom.classroomCode(),
+        "name", classroom.name(),
+        "status", classroom.status(),
+        "createdAt", classroom.createdAt().toString()
+    );
   }
 
   private static Map<String, String> parseBody(HttpExchangeAdapter exchange) throws IOException {

@@ -50,6 +50,10 @@
 - PostgreSQL has no unintended `DRAFT` questions after migration
 - Batch responses are monitored for `FAILED` items and unexpected skip reasons
 - `OPEN_ALL` retries do not increment rounds for already-open questions
+- no `global_group_buzz_counts.successful_buzz_count` exceeds the fixed global limit of `1`
+- each buzz round has at most one `submissions.buzz_winner = TRUE` row
+- new buzz records have no individual deadline, and no automatic timeout cancellation events are emitted
+- Redis contains only round receipt-sequence keys; no `buzz:winner:*` key is created
 
 ## Rollback
 
@@ -61,7 +65,15 @@
 6. If a schema-level issue caused the rollback:
    - stop API writes
    - restore PostgreSQL from the most recent snapshot
-   - clear Redis keys for active buzz locks if they are stale
+   - clear stale `buzz:sequence:*` keys only for explicitly identified inactive rounds
    - restart API and verify classroom creation, join, current-answer visibility, score detail, and reporting endpoints
 
 The `DRAFT` migration is intentionally one-way for questions that have subsequently advanced. Restore a migrated row to `DRAFT` only when its identifier was captured before deployment and it is still `READY` with no post-migration round or interaction activity; otherwise retain its current lifecycle state.
+
+## Open Buzz and Success-Limit Migration
+
+Apply `infra/postgres/init.sql` before deploying the new API. The idempotent migration adds `global_group_buzz_counts`, retains the legacy classroom-group table, backfills completed historical winners by global group number, and creates a partial unique index enforcing one winner submission per question round.
+
+Every classroom uses the fixed system-wide group limit of `1`, including existing classrooms; participation settings cannot override it and the teacher UI hides the field. Buzz attempts no longer enforce legacy `answerTimeLimitSeconds` or `answer_deadline_at` values; they remain active until submission, explicit cancellation, or round reset/closure. During rollout, monitor `NOT_FASTEST`, `NO_ACTIVE_ATTEMPT`, `WINNER_ALREADY_SUBMITTED`, `SUCCESS_LIMIT_REACHED`, and `sheet_sync_status = 'RETRYABLE'` separately.
+
+For rollback, deploy the previous API and web artifacts while retaining the additive columns and indexes. Historical success counts and winner markers are audit data and must not be deleted. The former API may recreate Redis winner keys; clear only keys for precisely identified inactive rounds after rollback verification.

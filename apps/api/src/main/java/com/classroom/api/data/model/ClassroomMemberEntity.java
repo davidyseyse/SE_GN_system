@@ -10,6 +10,7 @@ public record ClassroomMemberEntity(
     String role,
     String presenceStatus,
     Instant joinedAt,
-    Instant lastSeenAt
+    Instant lastSeenAt,
+    int successfulBuzzCount
 ) {
 }

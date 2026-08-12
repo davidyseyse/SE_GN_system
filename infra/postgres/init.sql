@@ -129,7 +129,9 @@ CREATE TABLE IF NOT EXISTS question_buzz_rounds (
 ALTER TABLE buzz_records ADD COLUMN IF NOT EXISTS round_number INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE buzz_records ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE buzz_records ADD COLUMN IF NOT EXISTS answer_deadline_at TIMESTAMPTZ NULL;
+ALTER TABLE buzz_records ALTER COLUMN outcome_status TYPE VARCHAR(32);
 ALTER TABLE submissions ADD COLUMN IF NOT EXISTS round_number INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE submissions ADD COLUMN IF NOT EXISTS buzz_winner BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE submissions ADD COLUMN IF NOT EXISTS group_number INTEGER NULL;
 ALTER TABLE submissions ADD COLUMN IF NOT EXISTS entered_by_teacher BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE submissions ADD COLUMN IF NOT EXISTS group_challenged BOOLEAN NOT NULL DEFAULT FALSE;
@@ -140,6 +142,74 @@ SET group_number = substring(u.display_name FROM '([0-9]+)[^0-9]*$')::INTEGER
 FROM users u
 WHERE s.user_id = u.id AND s.group_number IS NULL
   AND u.display_name ~ '[0-9]+[^0-9]*$';
+ALTER TABLE classroom_members
+  ADD COLUMN IF NOT EXISTS successful_buzz_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE classroom_members DROP CONSTRAINT IF EXISTS classroom_members_successful_buzz_count_nonnegative;
+ALTER TABLE classroom_members ADD CONSTRAINT classroom_members_successful_buzz_count_nonnegative
+  CHECK (successful_buzz_count >= 0);
+
+CREATE TABLE IF NOT EXISTS classroom_group_buzz_counts (
+  classroom_id UUID NOT NULL REFERENCES classrooms(id) ON DELETE CASCADE,
+  group_number INTEGER NOT NULL,
+  successful_buzz_count INTEGER NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (classroom_id, group_number),
+  CHECK (group_number > 0),
+  CHECK (successful_buzz_count >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS global_group_buzz_counts (
+  group_number INTEGER PRIMARY KEY,
+  successful_buzz_count INTEGER NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (group_number > 0),
+  CHECK (successful_buzz_count >= 0)
+);
+
+UPDATE submissions s
+SET buzz_winner = TRUE
+WHERE buzz_winner = FALSE
+  AND EXISTS (
+    SELECT 1
+    FROM buzz_records br
+    WHERE br.question_id = s.question_id
+      AND br.user_id = s.user_id
+      AND br.round_number = s.round_number
+      AND br.successful = TRUE
+  );
+
+UPDATE classroom_members cm
+SET successful_buzz_count = GREATEST(cm.successful_buzz_count, completed.completed_count)
+FROM (
+  SELECT classroom_id, user_id, COUNT(*)::INTEGER AS completed_count
+  FROM submissions
+  WHERE buzz_winner = TRUE
+  GROUP BY classroom_id, user_id
+) completed
+WHERE cm.classroom_id = completed.classroom_id
+  AND cm.user_id = completed.user_id;
+
+INSERT INTO classroom_group_buzz_counts (classroom_id, group_number, successful_buzz_count)
+SELECT classroom_id, group_number, COUNT(*)::INTEGER
+FROM submissions
+WHERE buzz_winner = TRUE AND group_number IS NOT NULL
+GROUP BY classroom_id, group_number
+ON CONFLICT (classroom_id, group_number) DO UPDATE
+SET successful_buzz_count = GREATEST(
+      classroom_group_buzz_counts.successful_buzz_count,
+      EXCLUDED.successful_buzz_count),
+    updated_at = NOW();
+
+INSERT INTO global_group_buzz_counts (group_number, successful_buzz_count)
+SELECT group_number, COUNT(*)::INTEGER
+FROM submissions
+WHERE buzz_winner = TRUE AND group_number IS NOT NULL
+GROUP BY group_number
+ON CONFLICT (group_number) DO UPDATE
+SET successful_buzz_count = GREATEST(
+      global_group_buzz_counts.successful_buzz_count,
+      EXCLUDED.successful_buzz_count),
+    updated_at = NOW();
 ALTER TABLE questions ALTER COLUMN state SET DEFAULT 'READY';
 
 DO $$
@@ -156,6 +226,9 @@ END $$;
 ALTER TABLE submissions DROP CONSTRAINT IF EXISTS submissions_question_id_user_id_attempt_number_key;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_submissions_round_attempt
   ON submissions (question_id, user_id, round_number, attempt_number);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_submissions_single_buzz_winner
+  ON submissions (question_id, round_number)
+  WHERE buzz_winner = TRUE;
 
 CREATE TABLE IF NOT EXISTS score_records (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -194,9 +267,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_buzz_records_single_active_winner
   ON buzz_records (question_id, round_number)
   WHERE successful = TRUE AND active = TRUE;
 
-CREATE INDEX IF NOT EXISTS idx_buzz_records_overdue_active_winner
-  ON buzz_records (answer_deadline_at, question_id, round_number)
-  WHERE successful = TRUE AND active = TRUE AND answer_deadline_at IS NOT NULL;
+DROP INDEX IF EXISTS idx_buzz_records_overdue_active_winner;
+
+CREATE INDEX IF NOT EXISTS idx_buzz_records_active_attempt_order
+  ON buzz_records (question_id, round_number, receipt_order, received_at)
+  WHERE active = TRUE;
 
 CREATE INDEX IF NOT EXISTS idx_submissions_lookup
   ON submissions (question_id, user_id, submitted_at DESC);
