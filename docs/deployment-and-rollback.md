@@ -2,6 +2,8 @@
 
 ## Runtime Services
 
+Google Sheet 統計需要 `GOOGLE_APPLICATION_CREDENTIALS` 指向有效服務帳戶憑證，且目標試算表已分享給該服務帳戶。API 更新後必須重新啟動 Java 服務，否則舊程序不會載入 `/api/sheet-configs/statistics` 路由。
+
 - `api`: Java HTTP API on `8080`
 - `websocket`: Java WebSocket transport on `8081`
 - `postgres`: PostgreSQL 16 on `5432`
@@ -50,7 +52,7 @@
 - PostgreSQL has no unintended `DRAFT` questions after migration
 - Batch responses are monitored for `FAILED` items and unexpected skip reasons
 - `OPEN_ALL` retries do not increment rounds for already-open questions
-- no `global_group_buzz_counts.successful_buzz_count` exceeds the fixed global limit of `1`
+- no `(group_number, success_date)` row in `global_group_buzz_counts` exceeds the fixed daily global limit of `1`
 - each buzz round has at most one `submissions.buzz_winner = TRUE` row
 - new buzz records have no individual deadline, and no automatic timeout cancellation events are emitted
 - Redis contains only round receipt-sequence keys; no `buzz:winner:*` key is created
@@ -72,8 +74,8 @@ The `DRAFT` migration is intentionally one-way for questions that have subsequen
 
 ## Open Buzz and Success-Limit Migration
 
-Apply `infra/postgres/init.sql` before deploying the new API. The idempotent migration adds `global_group_buzz_counts`, retains the legacy classroom-group table, backfills completed historical winners by global group number, and creates a partial unique index enforcing one winner submission per question round.
+Apply `infra/postgres/init.sql` before deploying the new API. The idempotent migration keys `global_group_buzz_counts` by group number and Asia/Taipei calendar date, migrates existing counts using their last-update date, retains the legacy classroom-group table, backfills completed historical winners by group number and submission date, and creates a partial unique index enforcing one winner submission per question round.
 
-Every classroom uses the fixed system-wide group limit of `1`, including existing classrooms; participation settings cannot override it and the teacher UI hides the field. Buzz attempts no longer enforce legacy `answerTimeLimitSeconds` or `answer_deadline_at` values; they remain active until submission, explicit cancellation, or round reset/closure. During rollout, monitor `NOT_FASTEST`, `NO_ACTIVE_ATTEMPT`, `WINNER_ALREADY_SUBMITTED`, `SUCCESS_LIMIT_REACHED`, and `sheet_sync_status = 'RETRYABLE'` separately.
+Every classroom uses the fixed system-wide daily group limit of `1`, including existing classrooms; participation settings cannot override it and the teacher UI hides the field. The active date changes automatically at Asia/Taipei midnight without a cleanup job. Buzz attempts no longer enforce legacy `answerTimeLimitSeconds` or `answer_deadline_at` values; they remain active until submission, explicit cancellation, or round reset/closure. During rollout, monitor `NOT_FASTEST`, `NO_ACTIVE_ATTEMPT`, `WINNER_ALREADY_SUBMITTED`, `SUCCESS_LIMIT_REACHED`, and `sheet_sync_status = 'RETRYABLE'` separately.
 
 For rollback, deploy the previous API and web artifacts while retaining the additive columns and indexes. Historical success counts and winner markers are audit data and must not be deleted. The former API may recreate Redis winner keys; clear only keys for precisely identified inactive rounds after rollback verification.

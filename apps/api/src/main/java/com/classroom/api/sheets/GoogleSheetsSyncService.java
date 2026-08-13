@@ -3,6 +3,7 @@ package com.classroom.api.sheets;
 import com.classroom.api.config.ServerConfig;
 import com.classroom.api.util.Base64Url;
 import com.classroom.api.util.JsonMapParser;
+import com.classroom.api.util.JsonParser;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -76,6 +77,23 @@ public final class GoogleSheetsSyncService {
           "Google Sheets batch update failed (HTTP " + response.statusCode() + "): " + response.body());
     }
     return true;
+  }
+
+  public SheetGroupStatistics.Result readGroupStatistics(String sheetId) {
+    if (credentials == null) {
+      throw new IllegalStateException("Google service account credentials are not configured");
+    }
+    String url = "https://sheets.googleapis.com/v4/spreadsheets/" + urlEncode(sheetId)
+        + "?includeGridData=true&fields=sheets(data(rowData(values(formattedValue))))";
+    HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+        .header("Authorization", "Bearer " + getAccessToken())
+        .GET().build();
+    HttpResponse<String> response = send(request, "Unable to read Google Sheets group statistics");
+    if (response.statusCode() >= 400) {
+      throw new IllegalStateException(
+          "Google Sheets read failed (HTTP " + response.statusCode() + "): " + response.body());
+    }
+    return SheetGroupStatistics.fromSpreadsheetPayload(JsonParser.parse(response.body()));
   }
 
   private synchronized String getAccessToken() {

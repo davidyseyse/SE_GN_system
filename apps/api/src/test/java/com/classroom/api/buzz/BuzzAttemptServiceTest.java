@@ -30,6 +30,7 @@ public final class BuzzAttemptServiceTest {
     BuzzAttemptServiceTest test = new BuzzAttemptServiceTest();
     test.fastestActiveAttemptWinsEvenWhenSlowerSubmitsFirst();
     test.successLimitSkipsSubmissionAtomically();
+    test.previousTaipeiDaySuccessDoesNotBlockToday();
     test.legacyDeadlineDoesNotExpireAnAttempt();
     test.explicitCancellationAdvancesEligibility();
     test.concurrentWinnerCommitCountsExactlyOnce();
@@ -75,6 +76,25 @@ public final class BuzzAttemptServiceTest {
           "Limit rejection changed the group success count");
       assertEquals("SUCCESS_LIMIT_REACHED", attemptOutcome(fixture.questionId, fixture.studentOneId),
           "Over-limit attempt was not made ineligible");
+    }
+  }
+
+  private void previousTaipeiDaySuccessDoesNotBlockToday() throws Exception {
+    try (Fixture fixture = createFixture()) {
+      BuzzAttemptService service = service();
+      execute("""
+          INSERT INTO global_group_buzz_counts
+            (group_number, success_date, successful_buzz_count)
+          VALUES (1, (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date - 1, 1)
+          """);
+      fixture.saveAttempt(fixture.studentOneId, 1, null);
+
+      assertEquals(0, classroomRepository.globalGroupSuccessfulBuzzCount(1),
+          "Previous-day success leaked into today's group count");
+      var result = service.saveFastestSubmission(fixture.submission(fixture.studentOneId), 1, 1);
+      assertTrue(result.accepted(), "Previous-day success blocked today's first winner");
+      assertEquals(1, classroomRepository.globalGroupSuccessfulBuzzCount(1),
+          "Today's accepted answer did not create a new daily count");
     }
   }
 

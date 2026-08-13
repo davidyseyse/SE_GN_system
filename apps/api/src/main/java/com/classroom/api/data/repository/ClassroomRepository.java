@@ -246,7 +246,12 @@ public final class ClassroomRepository {
   }
 
   public int globalGroupSuccessfulBuzzCount(int groupNumber) {
-    String sql = "SELECT successful_buzz_count FROM global_group_buzz_counts WHERE group_number = ?";
+    String sql = """
+        SELECT successful_buzz_count
+        FROM global_group_buzz_counts
+        WHERE group_number = ?
+          AND success_date = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date
+        """;
     try (Connection connection = database.openConnection();
          PreparedStatement statement = connection.prepareStatement(sql)) {
       statement.setInt(1, groupNumber);
@@ -264,9 +269,9 @@ public final class ClassroomRepository {
   ) throws SQLException {
     String sql = """
         INSERT INTO global_group_buzz_counts
-          (group_number, successful_buzz_count, updated_at)
-        VALUES (?, 1, NOW())
-        ON CONFLICT (group_number) DO UPDATE
+          (group_number, success_date, successful_buzz_count, updated_at)
+        VALUES (?, (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date, 1, NOW())
+        ON CONFLICT (group_number, success_date) DO UPDATE
         SET successful_buzz_count = global_group_buzz_counts.successful_buzz_count + 1,
             updated_at = NOW()
         WHERE global_group_buzz_counts.successful_buzz_count < ?

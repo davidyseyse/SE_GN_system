@@ -69,3 +69,23 @@
 - [x] 11.1 Add a read-only API that lists the existing classrooms available to students.
 - [x] 11.2 Replace the student classroom-code input with a blank-first classroom selector and disable joining until all fields are valid.
 - [x] 11.3 Update tests and documentation, then run API/web builds and strict OpenSpec validation.
+
+## 12. Neutral student unsuccessful-buzz feedback
+
+- [x] 12.1 Map student-visible limit, slower-attempt, and already-submitted outcomes to one neutral message.
+- [x] 12.2 Update UI tests and user documentation to ensure the group-limit reason is not disclosed.
+- [x] 12.3 Run web tests/build and strict OpenSpec validation.
+
+## 13. Daily group success accounting
+
+- [x] 13.1 Migrate global group counters to date-scoped keys using Asia/Taipei calendar dates.
+- [x] 13.2 Enforce and display only the current-day group count while preserving same-day cross-classroom atomicity.
+- [x] 13.3 Add previous-day rollover coverage and update user, validation, and deployment documentation.
+- [x] 13.4 Run API/web tests and builds plus strict OpenSpec validation.
+
+## 14. Linked-sheet group score statistics
+
+- [x] 14.1 Add teacher-only Sheet statistics API support that reads every worksheet and counts `_G<number>` markers by group.
+- [x] 14.2 Add the teacher score-statistics selector, action, loading/error handling, and group result display.
+- [x] 14.3 Add parser/UI coverage and update user and validation documentation.
+- [x] 14.4 Run API/web tests and builds plus strict OpenSpec validation.

@@ -159,12 +159,25 @@ CREATE TABLE IF NOT EXISTS classroom_group_buzz_counts (
 );
 
 CREATE TABLE IF NOT EXISTS global_group_buzz_counts (
-  group_number INTEGER PRIMARY KEY,
+  group_number INTEGER NOT NULL,
+  success_date DATE NOT NULL DEFAULT ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date),
   successful_buzz_count INTEGER NOT NULL DEFAULT 0,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (group_number, success_date),
   CHECK (group_number > 0),
   CHECK (successful_buzz_count >= 0)
 );
+
+ALTER TABLE global_group_buzz_counts ADD COLUMN IF NOT EXISTS success_date DATE;
+UPDATE global_group_buzz_counts
+SET success_date = (updated_at AT TIME ZONE 'Asia/Taipei')::date
+WHERE success_date IS NULL;
+ALTER TABLE global_group_buzz_counts
+  ALTER COLUMN success_date SET DEFAULT ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date),
+  ALTER COLUMN success_date SET NOT NULL;
+ALTER TABLE global_group_buzz_counts DROP CONSTRAINT IF EXISTS global_group_buzz_counts_pkey;
+ALTER TABLE global_group_buzz_counts
+  ADD CONSTRAINT global_group_buzz_counts_pkey PRIMARY KEY (group_number, success_date);
 
 UPDATE submissions s
 SET buzz_winner = TRUE
@@ -200,12 +213,12 @@ SET successful_buzz_count = GREATEST(
       EXCLUDED.successful_buzz_count),
     updated_at = NOW();
 
-INSERT INTO global_group_buzz_counts (group_number, successful_buzz_count)
-SELECT group_number, COUNT(*)::INTEGER
+INSERT INTO global_group_buzz_counts (group_number, success_date, successful_buzz_count)
+SELECT group_number, (submitted_at AT TIME ZONE 'Asia/Taipei')::date, COUNT(*)::INTEGER
 FROM submissions
 WHERE buzz_winner = TRUE AND group_number IS NOT NULL
-GROUP BY group_number
-ON CONFLICT (group_number) DO UPDATE
+GROUP BY group_number, (submitted_at AT TIME ZONE 'Asia/Taipei')::date
+ON CONFLICT (group_number, success_date) DO UPDATE
 SET successful_buzz_count = GREATEST(
       global_group_buzz_counts.successful_buzz_count,
       EXCLUDED.successful_buzz_count),

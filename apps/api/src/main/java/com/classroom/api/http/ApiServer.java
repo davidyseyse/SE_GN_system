@@ -184,7 +184,8 @@ public final class ApiServer implements AutoCloseable {
         authorizationGuard, classroomRepository, userRepository, questionRepository,
         questionItemRepository, questionPackageService);
     GoogleSheetsSyncService googleSheetsSyncService = new GoogleSheetsSyncService(config);
-    SheetConfigController sheetConfigController = new SheetConfigController(authorizationGuard, sheetConfigRepository);
+    SheetConfigController sheetConfigController =
+        new SheetConfigController(authorizationGuard, sheetConfigRepository, googleSheetsSyncService);
     BuzzController buzzController = new BuzzController(
         authorizationGuard, classroomRepository, questionRepository, userRepository, buzzRepository,
         redisBuzzSequenceService, buzzAttemptService, eventBroker,
@@ -223,6 +224,7 @@ public final class ApiServer implements AutoCloseable {
     router.add("GET", "/api/sheet-configs", sheetConfigController.listHandler());
     router.add("POST", "/api/sheet-configs", sheetConfigController.createHandler());
     router.add("POST", "/api/sheet-configs/delete", sheetConfigController.deleteHandler());
+    router.add("POST", "/api/sheet-configs/statistics", sheetConfigController.statisticsHandler());
     router.add("GET", "/api/classrooms/members", classroomController.membersHandler());
     router.add("GET", "/api/classrooms/presence", classroomController.presenceHandler());
     router.add("POST", "/api/questions", questionController.createQuestionHandler());

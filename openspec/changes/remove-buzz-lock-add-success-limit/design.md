@@ -11,7 +11,7 @@ Questions already have round identifiers, Redis receipt sequences, persisted buz
 - Accept and order every eligible student's buzz attempt without a winner lock.
 - Select the fastest active attempt by server-generated receipt order.
 - Persist and synchronize only one authoritative winner answer per round.
-- Enforce one completed win per group number globally across all classrooms.
+- Enforce one completed win per group number per Asia/Taipei calendar day globally across all classrooms.
 - Preserve scalar/package Sheets formatting, retries, rounds, realtime updates, and teacher correction.
 - Keep recorded attempts active without an individual countdown until submission, cancellation, or round lifecycle change.
 
@@ -44,11 +44,11 @@ Why: a conditional update and unique index provide concurrency safety without an
 
 Alternative considered: derive the count from historical buzz records on every request. Concurrent questions could both observe the same pre-submit count and exceed the limit.
 
-### Use a fixed global limit
+### Use a fixed daily global limit
 
-The effective `successfulBuzzLimit` is always `1`; participation JSON does not control it. The teacher UI does not expose the setting. Existing classroom-specific counters are retained as legacy data, while the global counter is backfilled from all winner submissions grouped only by group number.
+The effective `successfulBuzzLimit` is always `1`; participation JSON does not control it. The teacher UI does not expose the setting. Global counters use `(group_number, success_date)` where `success_date` is derived in PostgreSQL using the `Asia/Taipei` timezone. Existing counters are migrated to the Taipei date of their last update, and winner submissions are backfilled by group number and Taipei submission date.
 
-At buzz time, a student whose group is already at the limit receives `SUCCESS_LIMIT_REACHED` before receipt sequencing or persistence. Submission rechecks the group limit transactionally because another student in the same group may have committed after the buzz.
+At buzz time, a student whose group is already at today's limit receives `SUCCESS_LIMIT_REACHED` before receipt sequencing or persistence. Submission rechecks today's group limit transactionally because another student in the same group may have committed after the buzz. At Taipei midnight a new date key is used automatically, so no scheduled reset or destructive cleanup is required.
 
 ### Do not enforce individual answer deadlines
 
@@ -61,6 +61,8 @@ Why: the classroom does not require a per-student answer-time restriction. An at
 The buzz response keeps `accepted` but defines it as "attempt recorded" and adds `successful`, `outcomeStatus`, `receiptOrder`, `groupNumber`, `groupSuccessfulBuzzCount`, and `successfulBuzzLimit`. The student client opens an answer editor for its own recorded attempt and keeps other students' buzz buttons enabled.
 
 Submission responses add `accepted` and `outcomeStatus`. Only `accepted: true` responses include a persisted submission ID and proceed to score/event/Sheets side effects. Skipped responses use `NOT_FASTEST`, `SUCCESS_LIMIT_REACHED`, `NO_ACTIVE_ATTEMPT`, or `WINNER_ALREADY_SUBMITTED`.
+
+The student UI intentionally maps skipped buzz and submission outcomes to one neutral unsuccessful-buzz message. It does not display whether the underlying reason was the global group limit, receipt order, or an already committed winner. The API retains its distinct outcome for enforcement, tests, and authorized teacher-side observability.
 
 ### Prepare answers before the buzz action
 
@@ -80,9 +82,15 @@ The API lists only classrooms created by the authenticated teacher or assistant 
 
 The API exposes a read-only list containing only the identifier, name, code, and status of existing classrooms. The student login loads this list without requiring a student token, starts with no classroom selected, and prevents joining until the student explicitly chooses one. Joining and membership validation continue through the authenticated join endpoint after student login.
 
+### Compute group scores from the linked Google Sheet on demand
+
+The teacher dashboard provides a score-statistics component for a selected Sheet configuration. When the teacher activates the statistics action, an authenticated teacher-only API reads the populated cell display values from every worksheet in that spreadsheet and counts each answer suffix matching `_G<number>`. Results are sorted by numeric group number and include the number of matching successful-answer cells per group, the distinct successful-group count, and the total marker count.
+
+The spreadsheet remains the source of truth for this report; the API does not persist a duplicate score table. Reading occurs only on demand so teachers see the sheet's current contents, including any authorized corrections made directly in Google Sheets. Values without a positive numeric group suffix are ignored.
+
 ## Risks / Trade-offs
 
-- [Students may spend time answering although a faster attempt exists] → Keep the UI explicit that attempts are ranked and only the fastest valid submission is recorded; skipped responses explain the reason.
+- [Students may spend time answering although a faster attempt exists] → Keep the UI clear that only a successful buzz is recorded while using a neutral skipped message that does not disclose group-limit status.
 - [Redis sequence increment succeeds but database persistence fails] → Gaps are allowed; ordering depends on relative values, not contiguity.
 - [A faster attempt never submits] → The faster student can cancel, or the teacher can reset/close the round; without an individual time limit the system intentionally does not auto-advance.
 - [Sheets fails after the winner transaction] → Preserve the existing `RETRYABLE` status and idempotent retry without changing the success count.
@@ -92,7 +100,7 @@ The API exposes a read-only list containing only the identifier, name, code, and
 ## Migration Plan
 
 1. Add the member success counter and submission winner marker with non-breaking defaults.
-2. Backfill winner markers and global group counts from successful buzz records that have matching round submissions.
+2. Backfill winner markers and dated global group counts from successful buzz records that have matching round submissions.
 3. Create the partial one-winner-per-round index and supporting attempt lookup indexes.
 4. Deploy API behavior that no longer reads or writes Redis winner keys.
 5. Deploy the updated teacher setting and student open-buzz interface.
@@ -102,4 +110,4 @@ Rollback restores winner-lock behavior while retaining additive columns. The cou
 
 ## Open Questions
 
-None. The implementation always uses a hidden global group limit of one.
+None. The implementation always uses a hidden daily global group limit of one, with days defined by Asia/Taipei time.

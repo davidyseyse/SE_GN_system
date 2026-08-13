@@ -42,6 +42,7 @@ test("teacher hides the fixed global group limit and displays usage", () => {
   assert.doesNotMatch(teacherSource, /每組搶答成功上限必須是正整數/);
   assert.doesNotMatch(teacherSource, /value=\{successfulBuzzLimit\}/);
   assert.match(teacherSource, /member\.groupSuccessfulBuzzCount/);
+  assert.match(teacherSource, /今日成功搶答/);
   assert.match(teacherSource, /className="classroom-create-form"/);
   assert.match(teacherSource, /className="classroom-action-row"/);
   assert.doesNotMatch(teacherSource, /hero-action-button-primary/);
@@ -59,6 +60,16 @@ test("teacher selects owned classrooms and confirms deletion", () => {
   assert.match(teacherSource, /deleteClassroom\(teacherToken, deletedCode\)/);
   assert.match(teacherSource, />刪除課堂<\/button>/);
   assert.match(stylesSource, /\.classroom-resume-form > select/);
+});
+
+test("teacher can calculate linked-sheet group scores on demand", () => {
+  assert.match(teacherSource, /getSheetGroupStatistics/);
+  assert.match(teacherSource, /aria-label="統計用表單配置"/);
+  assert.match(teacherSource, /"統計分數"/);
+  assert.match(teacherSource, /sheetStatistics\.successfulGroupCount/);
+  assert.match(teacherSource, /sheetStatistics\.totalSuccessfulAnswers/);
+  assert.match(teacherSource, /group\.successfulAnswerCount/);
+  assert.match(stylesSource, /\.group-score-list/);
 });
 
 test("teacher edits current answers inside the question card and removes the legacy review panel", () => {
@@ -124,6 +135,10 @@ test("student prepares complete answers before buzzing and immediately submits",
   assert.match(studentSource, /await cancelBuzz[\s\S]*\.catch/);
   assert.match(studentSource, /SUCCESS_LIMIT_REACHED/);
   assert.match(studentSource, /NOT_FASTEST/);
+  assert.match(studentSource, /本次未搶答成功，答案未寫入系統。/);
+  assert.doesNotMatch(studentSource, /你的組別已達全系統搶答成功上限/);
+  assert.doesNotMatch(studentSource, /組已達搶答成功上限/);
+  assert.doesNotMatch(studentSource, /groupSuccessfulBuzzCount\}\/\$\{buzzResult\.successfulBuzzLimit/);
   assert.doesNotMatch(studentSource, /已被搶答/);
   assert.doesNotMatch(studentSource, /取消鎖定/);
 });

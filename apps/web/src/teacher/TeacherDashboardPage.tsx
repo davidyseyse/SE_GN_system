@@ -3,6 +3,7 @@ import {
   type QuestionView,
   type SubmittedAnswerView,
   type ClassroomView,
+  type SheetGroupStatisticsView,
   batchQuestionAction,
   createClassroom,
   createQuestionPackage,
@@ -12,6 +13,7 @@ import {
   getCurrentAnswers,
   getMembers,
   getSummary,
+  getSheetGroupStatistics,
   joinClassroom,
   listClassrooms,
   listQuestions,
@@ -101,6 +103,9 @@ export function TeacherDashboardPage() {
   const [sheetConfigName, setSheetConfigName] = useState("");
   const [sheetIdInput, setSheetIdInput] = useState("");
   const [selectedSheetConfigId, setSelectedSheetConfigId] = useState("");
+  const [statisticsSheetConfigId, setStatisticsSheetConfigId] = useState("");
+  const [sheetStatistics, setSheetStatistics] = useState<SheetGroupStatisticsView | null>(null);
+  const [statisticsLoading, setStatisticsLoading] = useState(false);
   const [questions, setQuestions] = useState<QuestionView[]>([]);
   const [answersByQuestionId, setAnswersByQuestionId] = useState<Record<string, SubmittedAnswerView[]>>({});
   const [editingSubmissionId, setEditingSubmissionId] = useState("");
@@ -254,7 +259,28 @@ export function TeacherDashboardPage() {
     if (selectedSheetConfigId === configId) {
       setSelectedSheetConfigId("");
     }
+    if (statisticsSheetConfigId === configId) {
+      setStatisticsSheetConfigId("");
+      setSheetStatistics(null);
+    }
     setNotice("Google Sheet 配置已刪除。");
+  }
+
+  async function handleCalculateSheetStatistics() {
+    if (!teacherToken || !statisticsSheetConfigId) {
+      return;
+    }
+    setStatisticsLoading(true);
+    setSheetStatistics(null);
+    try {
+      const result = await getSheetGroupStatistics(teacherToken, statisticsSheetConfigId);
+      setSheetStatistics(result);
+      setNotice(`已完成 ${result.config.name} 的搶答成功組別統計。`);
+    } catch (error) {
+      setNotice(error instanceof Error ? `統計失敗：${error.message}` : "統計失敗，請稍後再試。");
+    } finally {
+      setStatisticsLoading(false);
+    }
   }
 
   async function handleCreateQuestion() {
@@ -526,6 +552,53 @@ export function TeacherDashboardPage() {
       </div>
 
       <div className="panel">
+        <h3>搶答成功組別統計</h3>
+        <p className="muted">從所選 Google Sheet 的所有工作表讀取答案，依答案結尾的 _G組號 統計成功次數。</p>
+        <div className="inline-form sheet-statistics-controls">
+          <select
+            aria-label="統計用表單配置"
+            value={statisticsSheetConfigId}
+            onChange={(event) => {
+              setStatisticsSheetConfigId(event.target.value);
+              setSheetStatistics(null);
+            }}
+          >
+            <option value="">請選擇表單配置</option>
+            {sheetConfigs.map((config) => (
+              <option key={config.id} value={config.id}>{config.name}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            disabled={!teacherToken || !statisticsSheetConfigId || statisticsLoading}
+            onClick={() => void handleCalculateSheetStatistics()}
+          >
+            {statisticsLoading ? "統計中…" : "統計分數"}
+          </button>
+        </div>
+        {sheetStatistics ? (
+          <>
+            <div className="stat-grid sheet-statistics-summary">
+              <div><span>成功組別</span><strong>{sheetStatistics.successfulGroupCount}</strong></div>
+              <div><span>成功答案數</span><strong>{sheetStatistics.totalSuccessfulAnswers}</strong></div>
+            </div>
+            {sheetStatistics.groups.length > 0 ? (
+              <ul className="group-score-list">
+                {sheetStatistics.groups.map((group) => (
+                  <li key={group.groupNumber}>
+                    <span>第 {group.groupNumber} 組</span>
+                    <strong>{group.successfulAnswerCount} 次</strong>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="muted">目前表單內沒有搶答成功的組別。</p>
+            )}
+          </>
+        ) : null}
+      </div>
+
+      <div className="panel">
         <h3>題目與儲存格綁定</h3>
         <div className="stack-form question-package-form">
           <label>
@@ -708,7 +781,7 @@ export function TeacherDashboardPage() {
               <span>{String(member.userId)}</span>
               <span>{formatPresenceStatus(String(member.presenceStatus))}</span>
               <span>
-                第{String(member.groupNumber || "-")}組成功搶答：{String(member.groupSuccessfulBuzzCount ?? 0)} / {classroomSuccessfulBuzzLimit > 0 ? classroomSuccessfulBuzzLimit : "不限"}
+                第{String(member.groupNumber || "-")}組今日成功搶答：{String(member.groupSuccessfulBuzzCount ?? 0)} / {classroomSuccessfulBuzzLimit > 0 ? classroomSuccessfulBuzzLimit : "不限"}
               </span>
             </li>
           ))}

@@ -2,6 +2,8 @@
 
 ## Automated Validation
 
+Google Sheet 組別統計人工驗證：在不同工作表放入 `答案_G2`、`答案_G2`、`答案_G5`，教師按「統計分數」後應顯示 2 個成功組別、3 筆成功答案，第 2 組 2 次、第 5 組 1 次。其他結尾應忽略，學生權杖呼叫 `POST /api/sheet-configs/statistics` 應回傳 403。
+
 - `npm.cmd run test --workspace @classroom/api`
 
 This runs:
@@ -96,9 +98,10 @@ Before joining, confirm the teacher dashboard classroom selector starts blank, l
 
 1. Create two classrooms; confirm the teacher UI has no success-limit field, then join students A and B with group 1 in different classrooms and student C with group 2.
 2. Let student A submit the fastest answer; confirm every group-1 member row reports group usage `1 / 1`.
-3. Open a question in the other classroom and buzz as student B; confirm `SUCCESS_LIMIT_REACHED`, no receipt order, no buzz/submission/score row, and no Sheets request.
+3. Open a question in the other classroom and buzz as student B; confirm the API reports `SUCCESS_LIMIT_REACHED`, with no receipt order, buzz/submission/score row, or Sheets request. Confirm the student UI only says the buzz was unsuccessful and the answer was not written, without mentioning the group count or limit.
 4. Buzz and submit as student C; confirm group 2 is accepted independently and reports `1 / 1`.
 5. Run concurrent submissions from the same group number in different classrooms; confirm at most one transaction increments the global group counter and every skipped request produces no Sheets write.
+6. Insert or retain a group count dated before the current Asia/Taipei date; confirm the teacher view reports `0 / 1` for today and the group can win once again.
 
 ## Deployment and Rollback for Question Packages
 

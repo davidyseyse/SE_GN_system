@@ -32,13 +32,10 @@ type RealtimeEventView = {
 function submissionOutcomeMessage(outcomeStatus: string): string {
   switch (outcomeStatus) {
     case "NOT_FASTEST":
-      return "已有更快的有效搶答，本次答案未寫入系統。";
     case "SUCCESS_LIMIT_REACHED":
-      return "你的組別已達全系統搶答成功上限，本次答案未寫入系統。";
     case "WINNER_ALREADY_SUBMITTED":
-      return "本題已有最快答案，本次答案未寫入系統。";
     default:
-      return "本次答案未被系統接受。";
+      return "本次未搶答成功，答案未寫入系統。";
   }
 }
 
@@ -245,9 +242,7 @@ export function StudentPlayPage() {
       if (!buzzResult.accepted) {
         setNoticeByQuestionId((current) => ({
           ...current,
-          [questionId]: buzzResult.outcomeStatus === "SUCCESS_LIMIT_REACHED"
-            ? `第${buzzResult.groupNumber}組已達搶答成功上限（${buzzResult.groupSuccessfulBuzzCount}/${buzzResult.successfulBuzzLimit}），本次不記錄。`
-            : "本次搶答未被記錄。"
+          [questionId]: submissionOutcomeMessage(buzzResult.outcomeStatus)
         }));
         return;
       }

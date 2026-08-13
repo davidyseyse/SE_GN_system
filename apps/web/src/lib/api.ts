@@ -77,6 +77,16 @@ export type SheetConfigView = {
   createdAt: string;
 };
 
+export type SheetGroupStatisticsView = {
+  config: SheetConfigView;
+  successfulGroupCount: number;
+  totalSuccessfulAnswers: number;
+  groups: Array<{
+    groupNumber: number;
+    successfulAnswerCount: number;
+  }>;
+};
+
 export type ClassroomView = {
   id: string;
   code: string;
@@ -180,6 +190,13 @@ export async function createSheetConfig(token: string, name: string, sheetId: st
 
 export async function deleteSheetConfig(token: string, configId: string) {
   return request<{ deleted: string }>("/api/sheet-configs/delete", {
+    method: "POST",
+    body: JSON.stringify({ configId })
+  }, token);
+}
+
+export async function getSheetGroupStatistics(token: string, configId: string) {
+  return request<SheetGroupStatisticsView>("/api/sheet-configs/statistics", {
     method: "POST",
     body: JSON.stringify({ configId })
   }, token);

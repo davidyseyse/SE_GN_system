@@ -7,6 +7,7 @@ import com.classroom.api.util.EnvFileLoader;
 import com.classroom.api.util.JsonParser;
 import com.classroom.api.question.SheetCellRange;
 import com.classroom.api.sheets.SheetAnswerFormatter;
+import com.classroom.api.sheets.SheetGroupStatistics;
 import java.util.List;
 import java.util.Map;
 
@@ -43,6 +44,15 @@ public final class SmokeTest {
     }
     if (!"4455_G2".equals(SheetAnswerFormatter.format("4455", "第2組"))) {
       throw new IllegalStateException("Legacy display-name answer formatting failed");
+    }
+    SheetGroupStatistics.Result statistics = SheetGroupStatistics.fromSpreadsheetPayload(
+        JsonParser.parse("{\"sheets\":[{\"data\":[{\"rowData\":[{\"values\":["
+            + "{\"formattedValue\":\"A_G2\"},{\"formattedValue\":\"B_G5\"},"
+            + "{\"formattedValue\":\"C_G2\"},{\"formattedValue\":\"ignore_G0\"}]}]}]}]}"));
+    if (statistics.successfulGroupCount() != 2 || statistics.totalSuccessfulAnswers() != 3
+        || statistics.groups().get(0).groupNumber() != 2
+        || statistics.groups().get(0).successfulAnswerCount() != 2) {
+      throw new IllegalStateException("Google Sheets group statistics parsing failed");
     }
     System.out.println("Smoke test passed. API_PORT=" + port + ", JWT=" + token.substring(0, Math.min(token.length(), 24)) + "...");
   }

@@ -359,6 +359,33 @@ textarea {
   font-size: 1.6rem;
 }
 
+.sheet-statistics-controls {
+  margin: 1rem 0;
+}
+
+.sheet-statistics-summary {
+  margin-bottom: 1rem;
+}
+
+.group-score-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.75rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.group-score-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
 .center-panel {
   display: flex;
   justify-content: center;
