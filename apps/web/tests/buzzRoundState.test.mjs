@@ -5,24 +5,10 @@ import {
   canCancelBuzz,
   mergeSubmittedInteractionKeys,
   ownSubmittedInteractionKeys,
-  remainingAnswerSeconds,
   realtimeEventApplies,
   removeInteractionEntry,
-  removeQuestionRoundKeys,
-  timeoutCancellationNotice
+  removeQuestionRoundKeys
 } from "../dist/student/buzzRoundState.js";
-
-test("derives a stable whole-second countdown from the absolute server deadline", () => {
-  const deadline = "2026-08-06T04:00:10.000Z";
-  assert.equal(remainingAnswerSeconds(deadline, Date.parse("2026-08-06T04:00:00.000Z")), 10);
-  assert.equal(remainingAnswerSeconds(deadline, Date.parse("2026-08-06T04:00:09.001Z")), 1);
-  assert.equal(remainingAnswerSeconds(deadline, Date.parse("2026-08-06T04:00:10.001Z")), 0);
-});
-
-test("does not invent a countdown without a valid server deadline", () => {
-  assert.equal(remainingAnswerSeconds(undefined, Date.now()), null);
-  assert.equal(remainingAnswerSeconds("not-a-date", Date.now()), null);
-});
 
 test("tracks interaction state by question and round", () => {
   assert.equal(buzzInteractionKey("q1", "2"), "q1:2");
@@ -36,28 +22,23 @@ test("ignores stale winner and cancellation events", () => {
   assert.equal(realtimeEventApplies("BUZZ_RESET", "1", "2"), true);
 });
 
-test("reconciles a current-round timeout cancellation with an expiration notice", () => {
+test("reconciles a current-round explicit cancellation", () => {
   assert.equal(realtimeEventApplies("BUZZ_CANCELLED", "2", "2"), true);
   assert.deepEqual(
     removeInteractionEntry({ "q1:2": "current draft", "q1:1": "old draft", "q2:2": "other draft" }, "q1:2"),
     { "q1:1": "old draft", "q2:2": "other draft" }
   );
-  assert.equal(
-    timeoutCancellationNotice("BUZZ_CANCELLED", "TIMEOUT", "2", "2"),
-    "作答時間已到，已重新開放搶答。"
-  );
 });
 
-test("rejects a stale timeout cancellation without showing an expiration notice", () => {
+test("rejects a stale cancellation", () => {
   const drafts = { "q1:2": "current draft" };
   const reconciled = realtimeEventApplies("BUZZ_CANCELLED", "1", "2")
     ? removeInteractionEntry(drafts, "q1:1")
     : drafts;
   assert.equal(reconciled, drafts);
-  assert.equal(timeoutCancellationNotice("BUZZ_CANCELLED", "TIMEOUT", "1", "2"), null);
 });
 
-test("shows cancel only to an unsubmitted winner", () => {
+test("shows cancel only for an active unsubmitted attempt", () => {
   assert.equal(canCancelBuzz(true, false), true);
   assert.equal(canCancelBuzz(true, true), false);
   assert.equal(canCancelBuzz(false, false), false);

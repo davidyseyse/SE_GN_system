@@ -8,39 +8,22 @@ import java.net.Socket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 
-public final class RedisBuzzLockService {
+public final class RedisBuzzSequenceService {
   private final String host;
   private final int port;
 
-  public RedisBuzzLockService(ServerConfig config) {
+  public RedisBuzzSequenceService(ServerConfig config) {
     URI uri = URI.create(config.redisUrl());
     this.host = uri.getHost();
     this.port = uri.getPort() == -1 ? 6379 : uri.getPort();
   }
 
-  public boolean tryLock(String key, String value, int ttlSeconds) {
-    String response = send("SET", key, value, "NX", "EX", String.valueOf(ttlSeconds));
-    return "OK".equals(response);
-  }
-
-  public boolean tryLock(String key, String value) {
-    String response = send("SET", key, value, "NX");
-    return "OK".equals(response);
-  }
-
   public long nextSequence(String key) {
-    String response = send("INCR", key);
-    return Long.parseLong(response);
+    return Long.parseLong(send("INCR", key));
   }
 
   public void delete(String key) {
     send("DEL", key);
-  }
-
-  public boolean deleteIfValue(String key, String expectedValue) {
-    String script = "if redis.call('GET', KEYS[1]) == ARGV[1] then "
-        + "return redis.call('DEL', KEYS[1]) else return 0 end";
-    return "1".equals(send("EVAL", script, "1", key, expectedValue));
   }
 
   private String send(String... args) {
@@ -71,14 +54,11 @@ public final class RedisBuzzLockService {
     if (prefix == -1) {
       throw new IOException("Redis connection closed");
     }
-
     return switch ((char) prefix) {
       case '+', ':', '-' -> readLine(input);
       case '$' -> {
         int length = Integer.parseInt(readLine(input));
-        if (length < 0) {
-          yield "";
-        }
+        if (length < 0) yield "";
         byte[] data = input.readNBytes(length);
         input.read();
         input.read();

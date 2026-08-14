@@ -16,18 +16,16 @@ import com.classroom.api.data.repository.QuestionItemRepository;
 import com.classroom.api.data.repository.UserRepository;
 import com.classroom.api.http.HttpHandlerFunction;
 import com.classroom.api.http.HttpResponses;
-import com.classroom.api.redis.RedisBuzzLockService;
+import com.classroom.api.redis.RedisBuzzSequenceService;
 import com.classroom.api.realtime.RealtimeEventBroker;
 import com.classroom.api.question.QuestionLifecycleService;
 import com.classroom.api.score.ClassroomScoringPolicy;
-import com.classroom.api.data.model.ScoreRecordEntity;
-import com.classroom.api.data.repository.ScoreRepository;
+import com.classroom.api.sheets.SheetAnswerFormatter;
 import com.classroom.api.util.JsonMapParser;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.Comparator;
 
 public final class BuzzController {
   private final AuthorizationGuard authorizationGuard;
@@ -35,9 +33,8 @@ public final class BuzzController {
   private final QuestionRepository questionRepository;
   private final UserRepository userRepository;
   private final BuzzRepository buzzRepository;
-  private final ScoreRepository scoreRepository;
-  private final RedisBuzzLockService redisBuzzLockService;
-  private final BuzzDeadlineService buzzDeadlineService;
+  private final RedisBuzzSequenceService redisBuzzSequenceService;
+  private final BuzzAttemptService buzzAttemptService;
   private final RealtimeEventBroker eventBroker;
   private final BuzzRoundRepository buzzRoundRepository;
   private final QuestionLifecycleService lifecycleService;
@@ -49,9 +46,8 @@ public final class BuzzController {
       QuestionRepository questionRepository,
       UserRepository userRepository,
       BuzzRepository buzzRepository,
-      ScoreRepository scoreRepository,
-      RedisBuzzLockService redisBuzzLockService,
-      BuzzDeadlineService buzzDeadlineService,
+      RedisBuzzSequenceService redisBuzzSequenceService,
+      BuzzAttemptService buzzAttemptService,
       RealtimeEventBroker eventBroker,
       BuzzRoundRepository buzzRoundRepository,
       QuestionLifecycleService lifecycleService,
@@ -62,9 +58,8 @@ public final class BuzzController {
     this.questionRepository = questionRepository;
     this.userRepository = userRepository;
     this.buzzRepository = buzzRepository;
-    this.scoreRepository = scoreRepository;
-    this.redisBuzzLockService = redisBuzzLockService;
-    this.buzzDeadlineService = buzzDeadlineService;
+    this.redisBuzzSequenceService = redisBuzzSequenceService;
+    this.buzzAttemptService = buzzAttemptService;
     this.eventBroker = eventBroker;
     this.buzzRoundRepository = buzzRoundRepository;
     this.lifecycleService = lifecycleService;
@@ -82,20 +77,38 @@ public final class BuzzController {
       }
 
       UserEntity user = requireUser(authContext.subject());
+      if (!classroomRepository.hasMember(classroom.id(), user.id())) {
+        throw new SecurityException("User is not a member of this classroom");
+      }
       int roundNumber = buzzRoundRepository.current(question.id());
       if (roundNumber <= 0) {
         throw new IllegalArgumentException("No active buzz round");
       }
       String requestId = request.getOrDefault("requestId", UUID.randomUUID().toString());
       String roundKey = question.id() + ":" + roundNumber;
-      buzzDeadlineService.expireOverdueWinner(question.id(), roundNumber);
-      long sequence = redisBuzzLockService.nextSequence("buzz:sequence:" + roundKey);
+      ClassroomScoringPolicy policy = ClassroomScoringPolicy.fromSettings(classroom.participationSettings());
+      Integer groupNumber = SheetAnswerFormatter.extractGroupNumber(user.displayName());
+      if (groupNumber == null) {
+        throw new IllegalArgumentException("Student group number is required");
+      }
+      int groupSuccessfulBuzzCount = classroomRepository.globalGroupSuccessfulBuzzCount(groupNumber);
+      if (policy.hasReachedSuccessfulBuzzLimit(groupSuccessfulBuzzCount)) {
+        HttpResponses.json(exchange, 200, Map.of(
+            "accepted", false,
+            "successful", false,
+            "requestId", requestId,
+            "receiptOrder", 0,
+            "outcomeStatus", "SUCCESS_LIMIT_REACHED",
+            "groupNumber", groupNumber,
+            "groupSuccessfulBuzzCount", groupSuccessfulBuzzCount,
+            "successfulBuzzLimit", policy.successfulBuzzLimit()
+        ));
+        return;
+      }
+
+      long sequence = redisBuzzSequenceService.nextSequence("buzz:sequence:" + roundKey);
       UUID recordId = UUID.randomUUID();
-      boolean winner = buzzRepository.findActiveWinner(question.id(), roundNumber) == null
-          && tryWinnerLock("buzz:winner:" + roundKey, recordId, question.answerTimeLimitSeconds());
       Instant now = Instant.now();
-      Instant answerDeadlineAt = winner && isPositive(question.answerTimeLimitSeconds())
-          ? now.plusSeconds(question.answerTimeLimitSeconds()) : null;
 
       BuzzRecordEntity record = new BuzzRecordEntity(
           recordId,
@@ -105,37 +118,13 @@ public final class BuzzController {
           requestId,
           sequence,
           now,
-          winner ? "WINNER" : "LATE",
-          winner,
-          answerDeadlineAt
+          "RECORDED",
+          false,
+          null
       );
-      try {
-        buzzRepository.save(record, roundNumber);
-      } catch (RuntimeException exception) {
-        if (winner) {
-          redisBuzzLockService.deleteIfValue("buzz:winner:" + roundKey, recordId.toString());
-        }
-        throw exception;
-      }
+      buzzRepository.save(record, roundNumber);
 
-      if (winner) {
-        ClassroomScoringPolicy scoringPolicy = ClassroomScoringPolicy.fromSettings(classroom.participationSettings());
-        if (scoringPolicy.buzzBonus() != 0) {
-          int runningTotal = scoreRepository.currentTotal(classroom.id(), user.id()) + scoringPolicy.buzzBonus();
-          scoreRepository.save(new ScoreRecordEntity(
-              UUID.randomUUID(),
-              classroom.id(),
-              user.id(),
-              question.id(),
-              "BUZZ_BONUS",
-              scoringPolicy.buzzBonus(),
-              runningTotal,
-              now
-          ));
-        }
-      }
-
-      eventBroker.publish(classroom.classroomCode(), winner ? "BUZZ_RESULT" : "BUZZ_ATTEMPT_RECORDED", Map.of(
+      eventBroker.publish(classroom.classroomCode(), "BUZZ_ATTEMPT_RECORDED", Map.of(
           "packageId", question.id().toString(),
           "questionId", question.id().toString(),
           "roundId", Integer.toString(roundNumber),
@@ -144,16 +133,18 @@ public final class BuzzController {
           "displayName", user.displayName(),
           "requestId", requestId,
           "receiptOrder", sequence,
-          "successful", winner,
-          "answerDeadlineAt", answerDeadlineAt == null ? "" : answerDeadlineAt.toString()
+          "successful", false
       ));
 
       HttpResponses.json(exchange, 200, Map.of(
-          "accepted", winner,
+          "accepted", true,
+          "successful", false,
           "requestId", requestId,
           "receiptOrder", sequence,
           "outcomeStatus", record.outcomeStatus(),
-          "answerDeadlineAt", answerDeadlineAt == null ? "" : answerDeadlineAt.toString()
+          "groupNumber", groupNumber,
+          "groupSuccessfulBuzzCount", groupSuccessfulBuzzCount,
+          "successfulBuzzLimit", policy.successfulBuzzLimit()
       ));
     };
   }
@@ -192,7 +183,7 @@ public final class BuzzController {
       UserEntity user = requireUser(authContext.subject());
       int roundNumber = buzzRoundRepository.current(question.id());
 
-      buzzDeadlineService.cancelWinner(question.id(), roundNumber, user.id());
+      buzzAttemptService.cancelAttempt(question.id(), roundNumber, user.id());
       eventBroker.publish(classroom.classroomCode(), "BUZZ_CANCELLED", Map.of(
           "questionId", question.id().toString(),
           "roundId", Integer.toString(roundNumber),
@@ -263,18 +254,6 @@ public final class BuzzController {
       throw new IllegalArgumentException("User not found");
     }
     return user;
-  }
-
-  private boolean tryWinnerLock(String key, UUID recordId, Integer answerTimeLimitSeconds) {
-    if (!isPositive(answerTimeLimitSeconds)) {
-      return redisBuzzLockService.tryLock(key, recordId.toString());
-    }
-    long ttl = (long) answerTimeLimitSeconds + BuzzDeadlineService.REDIS_CLEANUP_GRACE_SECONDS;
-    return redisBuzzLockService.tryLock(key, recordId.toString(), (int) Math.min(Integer.MAX_VALUE, ttl));
-  }
-
-  private static boolean isPositive(Integer value) {
-    return value != null && value > 0;
   }
 
 }

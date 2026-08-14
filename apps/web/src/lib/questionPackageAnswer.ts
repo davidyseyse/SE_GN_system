@@ -1,5 +1,12 @@
 import type { QuestionItemView } from "./api";
 
+export function arePackageAnswersComplete(
+  items: QuestionItemView[],
+  answers: Record<string, string>
+): boolean {
+  return items.length > 0 && items.every((item) => (answers[item.id] ?? "").trim().length > 0);
+}
+
 export function parsePackageAnswers(answer: string): Record<string, string> | null {
   try {
     const parsed: unknown = JSON.parse(answer);

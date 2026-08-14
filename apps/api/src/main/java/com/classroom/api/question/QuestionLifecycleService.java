@@ -6,7 +6,7 @@ import com.classroom.api.data.DatabaseException;
 import com.classroom.api.data.model.ClassroomEntity;
 import com.classroom.api.data.model.QuestionEntity;
 import com.classroom.api.data.repository.QuestionRepository;
-import com.classroom.api.redis.RedisBuzzLockService;
+import com.classroom.api.redis.RedisBuzzSequenceService;
 import com.classroom.api.realtime.RealtimeEventBroker;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -18,19 +18,19 @@ import java.util.Map;
 public final class QuestionLifecycleService {
   private final Database database;
   private final QuestionRepository questionRepository;
-  private final RedisBuzzLockService redisBuzzLockService;
+  private final RedisBuzzSequenceService redisBuzzSequenceService;
   private final RealtimeEventBroker eventBroker;
   private final QuestionStateMachine stateMachine = new QuestionStateMachine();
 
   public QuestionLifecycleService(
       Database database,
       QuestionRepository questionRepository,
-      RedisBuzzLockService redisBuzzLockService,
+      RedisBuzzSequenceService redisBuzzSequenceService,
       RealtimeEventBroker eventBroker
   ) {
     this.database = database;
     this.questionRepository = questionRepository;
-    this.redisBuzzLockService = redisBuzzLockService;
+    this.redisBuzzSequenceService = redisBuzzSequenceService;
     this.eventBroker = eventBroker;
   }
 
@@ -72,8 +72,7 @@ public final class QuestionLifecycleService {
           "SKIPPED", roundNumber, "Question is not active or locked");
     }
 
-    redisBuzzLockService.delete("buzz:winner:" + question.id() + ":" + roundNumber);
-    redisBuzzLockService.delete("buzz:sequence:" + question.id() + ":" + roundNumber);
+    redisBuzzSequenceService.delete("buzz:sequence:" + question.id() + ":" + roundNumber);
     try (Connection connection = database.openConnection();
          PreparedStatement statement = connection.prepareStatement("""
              UPDATE questions

@@ -1,5 +1,6 @@
 import { createBrowserRouter, Navigate } from "react-router-dom";
-import { LoginPage } from "./auth/LoginPage";
+import { StudentLoginPage } from "./auth/StudentLoginPage";
+import { TeacherLoginPage } from "./auth/TeacherLoginPage";
 import { RequireRole } from "./auth/RequireRole";
 import { StudentJoinPage } from "./student/StudentJoinPage";
 import { StudentPlayPage } from "./student/StudentPlayPage";
@@ -11,8 +12,10 @@ export const router = createBrowserRouter([
     path: "/",
     element: <AppShell />,
     children: [
-      { index: true, element: <Navigate to="/login" replace /> },
-      { path: "login", element: <LoginPage /> },
+      { index: true, element: <Navigate to="/student/login" replace /> },
+      { path: "login", element: <Navigate to="/student/login" replace /> },
+      { path: "teacher/login", element: <TeacherLoginPage /> },
+      { path: "student/login", element: <StudentLoginPage /> },
       {
         path: "teacher",
         element: (

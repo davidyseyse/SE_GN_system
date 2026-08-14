@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  arePackageAnswersComplete,
   formatPackageAnswer,
   formatTeacherAnswerAttribution,
   parsePackageAnswers
@@ -22,6 +23,12 @@ test("formats item-id keyed answers using subquestion prompts", () => {
 test("keeps legacy plain answers readable", () => {
   assert.equal(formatPackageAnswer("legacy answer", items), "legacy answer");
   assert.equal(parsePackageAnswers("legacy answer"), null);
+});
+
+test("requires every prepared package answer before buzzing", () => {
+  assert.equal(arePackageAnswersComplete(items, {}), false);
+  assert.equal(arePackageAnswersComplete(items, { "item-1": "A", "item-2": "   " }), false);
+  assert.equal(arePackageAnswersComplete(items, { "item-1": "A", "item-2": "B" }), true);
 });
 
 test("formats original identity and challenge group without ambiguous concatenation", () => {

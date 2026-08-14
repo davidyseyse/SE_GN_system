@@ -30,14 +30,56 @@ test("package form validates duplicate cells and resets only after successful aw
   );
 });
 
-test("teacher configures a positive whole-number answer limit instead of a hard-coded value", () => {
-  assert.match(teacherSource, /setAnswerTimeLimitSeconds\] = useState\("30"\)/);
-  assert.match(teacherSource, /type="number"/);
-  assert.match(teacherSource, /min="1"/);
-  assert.match(teacherSource, /step="1"/);
-  assert.match(teacherSource, /Number\.isInteger\(configuredAnswerTimeLimitSeconds\)/);
-  assert.match(teacherSource, /answerTimeLimitSeconds: configuredAnswerTimeLimitSeconds/);
-  assert.doesNotMatch(teacherSource, /answerTimeLimitSeconds:\s*30/);
+test("teacher does not configure an individual answer deadline", () => {
+  assert.doesNotMatch(teacherSource, /setAnswerTimeLimitSeconds/);
+  assert.doesNotMatch(teacherSource, /作答時限/);
+  assert.doesNotMatch(teacherSource, /answerTimeLimitSeconds:/);
+});
+
+test("teacher hides the fixed global group limit and displays usage", () => {
+  assert.doesNotMatch(teacherSource, /setSuccessfulBuzzLimit/);
+  assert.doesNotMatch(teacherSource, /successfulBuzzLimit: parsedSuccessfulBuzzLimit/);
+  assert.doesNotMatch(teacherSource, /每組搶答成功上限必須是正整數/);
+  assert.doesNotMatch(teacherSource, /value=\{successfulBuzzLimit\}/);
+  assert.match(teacherSource, /member\.groupSuccessfulBuzzCount/);
+  assert.match(teacherSource, /今日成功搶答/);
+  assert.match(teacherSource, /className="classroom-create-form"/);
+  assert.match(teacherSource, /className="classroom-action-row"/);
+  assert.doesNotMatch(teacherSource, /hero-action-button-primary/);
+  assert.equal((teacherSource.match(/hero-action-button hero-action-button-secondary/g) ?? []).length, 2);
+});
+
+test("teacher can reset all current-day group answer limits independently", () => {
+  assert.match(teacherSource, /resetAnswerLimits/);
+  assert.match(teacherSource, /確定要重置所有組別的答題限制嗎？/);
+  assert.match(teacherSource, />\s*重置全部題目\s*<\/button>[\s\S]*?>\s*重置答題限制\s*<\/button>/);
+  assert.match(teacherSource, /await resetAnswerLimits\(teacherToken, classroomCode\)/);
+  assert.match(teacherSource, /await getMembers\(teacherToken, classroomCode\)/);
+  assert.match(teacherSource, /已重置所有組別今天的答題限制。/);
+  assert.match(teacherSource, /目前沒有需要重置的答題限制。/);
+});
+
+test("teacher selects owned classrooms and confirms deletion", () => {
+  assert.match(teacherSource, /listClassrooms/);
+  assert.match(teacherSource, /const \[resumeClassroomCode, setResumeClassroomCode\] = useState\(""\)/);
+  assert.match(teacherSource, /aria-label="選擇現有課堂"/);
+  assert.match(teacherSource, /<option value="">請選擇現有課堂<\/option>/);
+  assert.doesNotMatch(teacherSource, /placeholder="輸入課堂代碼以重返既有課堂"/);
+  assert.match(teacherSource, /setResumeClassroomCode\(result\.classroom\.code\)/);
+  assert.match(teacherSource, /window\.confirm/);
+  assert.match(teacherSource, /deleteClassroom\(teacherToken, deletedCode\)/);
+  assert.match(teacherSource, />刪除課堂<\/button>/);
+  assert.match(stylesSource, /\.classroom-resume-form > select/);
+});
+
+test("teacher can calculate linked-sheet group scores on demand", () => {
+  assert.match(teacherSource, /getSheetGroupStatistics/);
+  assert.match(teacherSource, /aria-label="統計用表單配置"/);
+  assert.match(teacherSource, /"統計分數"/);
+  assert.match(teacherSource, /sheetStatistics\.successfulGroupCount/);
+  assert.match(teacherSource, /sheetStatistics\.totalSuccessfulAnswers/);
+  assert.match(teacherSource, /group\.successfulAnswerCount/);
+  assert.match(stylesSource, /\.group-score-list/);
 });
 
 test("teacher edits current answers inside the question card and removes the legacy review panel", () => {
@@ -78,25 +120,39 @@ test("student answer refreshes ignore stale responses and reconcile after realti
   assert.match(studentSource, /await refreshStudentView\(\)/);
 });
 
-test("student timeout cancellation is round-scoped and displays the expiration notice", () => {
-  assert.match(studentSource, /reason\?: string/);
-  assert.match(studentSource, /timeoutCancellationNotice\(/);
+test("student explicit cancellation remains round-scoped", () => {
+  assert.doesNotMatch(studentSource, /timeoutCancellationNotice\(/);
   assert.match(studentSource, /realtimeEventApplies\(latestEvent\.type, eventRoundId, currentRoundId\)/);
-  assert.match(studentSource, /\[questionId\]: expirationNotice/);
-  assert.match(studentSource, /const canBuzz = state === "BUZZ_OPEN" && winnerUserId === ""/);
+  assert.match(studentSource, /eventTargetsCurrentStudent/);
+  assert.match(studentSource, /const canBuzz = state === "BUZZ_OPEN" && answersComplete/);
 });
 
-test("student winner countdown uses the server deadline and waits for authoritative release", () => {
-  assert.match(studentSource, /answerDeadlineAt\?: string/);
-  assert.match(studentSource, /remainingAnswerSeconds\(/);
-  assert.match(studentSource, /countdownSeconds !== null/);
-  assert.match(studentSource, /剩餘 \$\{countdownSeconds\} 秒/);
-  assert.match(studentSource, /: "時間到"/);
-  assert.match(studentSource, /isWinner && !hasSubmitted/);
+test("student attempt has no countdown or deadline", () => {
+  assert.doesNotMatch(studentSource, /answerDeadlineAt/);
+  assert.doesNotMatch(studentSource, /remainingAnswerSeconds/);
+  assert.doesNotMatch(studentSource, /countdownSeconds/);
+  assert.doesNotMatch(studentSource, /role="timer"/);
+  assert.match(studentSource, /ownBuzzAttemptRecorded/);
 });
 
-test("student winner countdown is pinned to the question card top-right corner", () => {
-  assert.match(stylesSource, /\.question-list \.question-stage \{[\s\S]*?position: relative;/);
-  assert.match(stylesSource, /\.answer-countdown \{[\s\S]*?position: absolute;[\s\S]*?top: 1rem;[\s\S]*?right: 1rem;/);
-  assert.match(stylesSource, /\.question-list \.question-stage > strong:first-child \{[\s\S]*?padding-right: 7\.5rem;/);
+test("student prepares complete answers before buzzing and immediately submits", () => {
+  assert.match(studentSource, /setLocallyBuzzedQuestionIds/);
+  assert.match(studentSource, /arePackageAnswersComplete/);
+  assert.match(studentSource, /完成所有答案後即可搶答/);
+  assert.match(studentSource, /搶答並送出答案/);
+  assert.match(studentSource, /const buzzResult = await submitBuzz/);
+  assert.match(studentSource, /const submissionResult = await submitPackageAnswers/);
+  assert.match(studentSource, /await cancelBuzz[\s\S]*\.catch/);
+  assert.match(studentSource, /SUCCESS_LIMIT_REACHED/);
+  assert.match(studentSource, /NOT_FASTEST/);
+  assert.match(studentSource, /本次未搶答成功，答案未寫入系統。/);
+  assert.doesNotMatch(studentSource, /你的組別已達全系統搶答成功上限/);
+  assert.doesNotMatch(studentSource, /組已達搶答成功上限/);
+  assert.doesNotMatch(studentSource, /groupSuccessfulBuzzCount\}\/\$\{buzzResult\.successfulBuzzLimit/);
+  assert.doesNotMatch(studentSource, /已被搶答/);
+  assert.doesNotMatch(studentSource, /取消鎖定/);
+});
+
+test("student styles do not reserve space for a countdown", () => {
+  assert.doesNotMatch(stylesSource, /\.answer-countdown/);
 });

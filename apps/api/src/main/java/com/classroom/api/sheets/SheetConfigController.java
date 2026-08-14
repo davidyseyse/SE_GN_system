@@ -16,10 +16,16 @@ import java.util.UUID;
 public final class SheetConfigController {
   private final AuthorizationGuard authorizationGuard;
   private final SheetConfigRepository repository;
+  private final GoogleSheetsSyncService sheetsService;
 
-  public SheetConfigController(AuthorizationGuard authorizationGuard, SheetConfigRepository repository) {
+  public SheetConfigController(
+      AuthorizationGuard authorizationGuard,
+      SheetConfigRepository repository,
+      GoogleSheetsSyncService sheetsService
+  ) {
     this.authorizationGuard = authorizationGuard;
     this.repository = repository;
+    this.sheetsService = sheetsService;
   }
 
   public HttpHandlerFunction createHandler() {
@@ -51,6 +57,28 @@ public final class SheetConfigController {
       String id = requiredValue(request, "configId");
       repository.delete(UUID.fromString(id));
       HttpResponses.json(exchange, 200, Map.of("deleted", id));
+    };
+  }
+
+  public HttpHandlerFunction statisticsHandler() {
+    return exchange -> {
+      authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
+      Map<String, String> request = parseBody(exchange);
+      UUID configId = UUID.fromString(requiredValue(request, "configId"));
+      SheetConfigEntity config = repository.findById(configId);
+      if (config == null) {
+        throw new IllegalArgumentException("Sheet config does not exist");
+      }
+      SheetGroupStatistics.Result statistics = sheetsService.readGroupStatistics(config.sheetId());
+      HttpResponses.json(exchange, 200, Map.of(
+          "config", serialize(config),
+          "successfulGroupCount", statistics.successfulGroupCount(),
+          "totalSuccessfulAnswers", statistics.totalSuccessfulAnswers(),
+          "groups", statistics.groups().stream().map(group -> Map.of(
+              "groupNumber", group.groupNumber(),
+              "successfulAnswerCount", group.successfulAnswerCount()
+          )).toList()
+      ));
     };
   }
 

@@ -67,10 +67,35 @@ function Wait-ForInfra {
 
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   while ((Get-Date) -lt $deadline) {
-    $postgresReady = Test-TcpPort -HostName "127.0.0.1" -Port $script:ApiTestPostgresPort
-    $redisReady = Test-TcpPort -HostName "127.0.0.1" -Port $script:ApiTestRedisPort
-
-    if ($postgresReady -and $redisReady) {
+    $infraReady = $false
+    Push-Location $RepoRoot
+    try {
+      try {
+        Invoke-TestCompose -ComposeArguments @(
+          "exec", "-T", "postgres", "pg_isready", "-h", "127.0.0.1",
+          "-U", "classroom", "-d", "classroom"
+        ) | Out-Null
+        $redisPing = Invoke-TestCompose -ComposeArguments @("exec", "-T", "redis", "redis-cli", "PING")
+        $infraReady = [string]$redisPing -match "PONG"
+      }
+      catch {
+        $infraReady = $false
+      }
+    }
+    finally {
+      Pop-Location
+    }
+    if ($infraReady) {
+      Push-Location $RepoRoot
+      try {
+        Invoke-TestCompose -ComposeArguments @(
+          "exec", "-T", "postgres", "psql", "-U", "classroom", "-d", "classroom",
+          "-v", "ON_ERROR_STOP=1", "-f", "/docker-entrypoint-initdb.d/init.sql"
+        ) | Out-Null
+      }
+      finally {
+        Pop-Location
+      }
       return
     }
 
@@ -143,7 +168,7 @@ function Stop-ApiProcess {
   )
 
   if ($null -ne $Process -and -not $Process.HasExited) {
-    $Process.Kill($true)
+    $Process.Kill()
     if (-not $Process.WaitForExit(5000)) {
       throw "API process $($Process.Id) did not exit within 5 seconds"
     }
@@ -284,6 +309,61 @@ function Query-AuditCount {
   try {
     $count = Invoke-TestCompose -ComposeArguments @("exec", "-T", "postgres", "psql", "-U", "classroom", "-d", "classroom", "-t", "-A", "-c", "select count(*) from audit_logs where action_type = 'EXPORT_GENERATED';")
     return [int]($count.Trim())
+  }
+  finally {
+    Pop-Location
+  }
+}
+
+function Reset-GlobalGroupBuzzCounts {
+  param([string]$RepoRoot)
+
+  Push-Location $RepoRoot
+  try {
+    Invoke-TestCompose -ComposeArguments @(
+      "exec", "-T", "postgres", "psql", "-U", "classroom", "-d", "classroom",
+      "-c", "TRUNCATE TABLE global_group_buzz_counts;"
+    ) | Out-Null
+  }
+  finally {
+    Pop-Location
+  }
+}
+
+function Set-GlobalGroupBuzzCountForValidation {
+  param(
+    [string]$RepoRoot,
+    [int]$GroupNumber,
+    [string]$DateExpression,
+    [int]$Count
+  )
+  Push-Location $RepoRoot
+  try {
+    Invoke-TestCompose -ComposeArguments @(
+      "exec", "-T", "postgres", "psql", "-U", "classroom", "-d", "classroom",
+      "-v", "ON_ERROR_STOP=1", "-c",
+      "INSERT INTO global_group_buzz_counts (group_number, success_date, successful_buzz_count) VALUES ($GroupNumber, $DateExpression, $Count) ON CONFLICT (group_number, success_date) DO UPDATE SET successful_buzz_count = EXCLUDED.successful_buzz_count;"
+    ) | Out-Null
+  }
+  finally {
+    Pop-Location
+  }
+}
+
+function Query-GlobalGroupBuzzCountForValidation {
+  param(
+    [string]$RepoRoot,
+    [int]$GroupNumber,
+    [string]$DateExpression
+  )
+  Push-Location $RepoRoot
+  try {
+    $value = Invoke-TestCompose -ComposeArguments @(
+      "exec", "-T", "postgres", "psql", "-U", "classroom", "-d", "classroom",
+      "-t", "-A", "-c",
+      "SELECT COALESCE((SELECT successful_buzz_count FROM global_group_buzz_counts WHERE group_number = $GroupNumber AND success_date = $DateExpression), 0);"
+    )
+    return [int]([string]$value).Trim()
   }
   finally {
     Pop-Location

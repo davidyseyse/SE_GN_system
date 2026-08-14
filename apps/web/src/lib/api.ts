@@ -41,7 +41,7 @@ export type QuestionView = ClassroomQuestionContract & {
   winnerUserId?: string;
   winnerExternalUserId?: string;
   winnerDisplayName?: string;
-  answerDeadlineAt?: string;
+  ownBuzzAttemptRecorded?: boolean;
   submissionStatus?: string;
   reviewStatus?: string;
 };
@@ -75,6 +75,24 @@ export type SheetConfigView = {
   name: string;
   sheetId: string;
   createdAt: string;
+};
+
+export type SheetGroupStatisticsView = {
+  config: SheetConfigView;
+  successfulGroupCount: number;
+  totalSuccessfulAnswers: number;
+  groups: Array<{
+    groupNumber: number;
+    successfulAnswerCount: number;
+  }>;
+};
+
+export type ClassroomView = {
+  id: string;
+  code: string;
+  name: string;
+  status: string;
+  createdAt?: string;
 };
 
 export type SubmittedAnswerView = {
@@ -144,6 +162,21 @@ export async function createClassroom(
   }, token);
 }
 
+export async function listClassrooms(token: string) {
+  return request<{ classrooms: ClassroomView[] }>("/api/classrooms", undefined, token);
+}
+
+export async function listAvailableClassrooms() {
+  return request<{ classrooms: ClassroomView[] }>("/api/classrooms/available");
+}
+
+export async function deleteClassroom(token: string, classroomCode: string) {
+  return request<{ deletedClassroomCode: string }>("/api/classrooms/delete", {
+    method: "POST",
+    body: JSON.stringify({ classroomCode })
+  }, token);
+}
+
 export async function listSheetConfigs(token: string) {
   return request<{ configs: SheetConfigView[] }>("/api/sheet-configs", undefined, token);
 }
@@ -157,6 +190,13 @@ export async function createSheetConfig(token: string, name: string, sheetId: st
 
 export async function deleteSheetConfig(token: string, configId: string) {
   return request<{ deleted: string }>("/api/sheet-configs/delete", {
+    method: "POST",
+    body: JSON.stringify({ configId })
+  }, token);
+}
+
+export async function getSheetGroupStatistics(token: string, configId: string) {
+  return request<SheetGroupStatisticsView>("/api/sheet-configs/statistics", {
     method: "POST",
     body: JSON.stringify({ configId })
   }, token);
@@ -178,11 +218,30 @@ export async function joinClassroom(token: string, classroomCode: string) {
 }
 
 export async function getMembers(token: string, classroomCode: string) {
-  return request<{ members: Array<ClassroomParticipantContract & { presenceStatus: string; joinedAt: string; lastSeenAt: string }> }>(
+  return request<{
+    successfulBuzzLimit: number;
+    members: Array<ClassroomParticipantContract & {
+      presenceStatus: string;
+      joinedAt: string;
+      lastSeenAt: string;
+      groupNumber: number;
+      groupSuccessfulBuzzCount: number;
+    }>;
+  }>(
     `/api/classrooms/members?classroomCode=${encodeURIComponent(classroomCode)}`,
     undefined,
     token
   );
+}
+
+export async function resetAnswerLimits(token: string, classroomCode: string) {
+  return request<{
+    status: "ANSWER_LIMITS_RESET";
+    resetGroupCount: number;
+  }>("/api/classrooms/answer-limits/reset", {
+    method: "POST",
+    body: JSON.stringify({ classroomCode })
+  }, token);
 }
 
 export async function createQuestion(
@@ -224,7 +283,15 @@ export async function submitPackageAnswers(
   packageId: string,
   answers: Array<{ itemId: string; answer: string }>
 ) {
-  return request<{ submissionId: string; syncStatus: string }>(
+  return request<{
+    accepted: boolean;
+    outcomeStatus: string;
+    submissionId?: string;
+    syncStatus: string;
+    groupNumber: number;
+    groupSuccessfulBuzzCount: number;
+    successfulBuzzLimit: number;
+  }>(
     "/api/question-packages/answers",
     {
       method: "POST",
@@ -305,7 +372,16 @@ export async function submitAnswer(token: string, classroomCode: string, questio
 }
 
 export async function submitBuzz(token: string, classroomCode: string, questionId: string) {
-  return request<{ accepted: boolean; outcomeStatus: string; requestId: string; answerDeadlineAt: string }>(
+  return request<{
+    accepted: boolean;
+    successful: boolean;
+    outcomeStatus: string;
+    requestId: string;
+    receiptOrder: number;
+    groupNumber: number;
+    groupSuccessfulBuzzCount: number;
+    successfulBuzzLimit: number;
+  }>(
     "/api/buzz",
     {
       method: "POST",

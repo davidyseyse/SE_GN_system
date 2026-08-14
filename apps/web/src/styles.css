@@ -359,6 +359,33 @@ textarea {
   font-size: 1.6rem;
 }
 
+.sheet-statistics-controls {
+  margin: 1rem 0;
+}
+
+.sheet-statistics-summary {
+  margin-bottom: 1rem;
+}
+
+.group-score-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.75rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.group-score-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
 .center-panel {
   display: flex;
   justify-content: center;
@@ -412,31 +439,68 @@ textarea {
   color: #1d4ed8;
 }
 
-.question-list .question-stage > strong:first-child {
-  padding-right: 7.5rem;
-}
-
-.answer-countdown {
-  position: absolute;
-  top: 1rem;
-  right: 1rem;
-  z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0;
-  border-radius: 999px;
-  background: rgba(234, 179, 8, 0.18);
-  color: #713f12;
-  padding: 0.45rem 0.75rem;
-  font-size: 0.95rem;
+.secondary-link {
+  color: #0f766e;
   font-weight: 700;
-  white-space: nowrap;
+  text-align: center;
 }
 
-.answer-countdown-expired {
-  background: rgba(239, 68, 68, 0.12);
-  color: #991b1b;
+.inline-form > input,
+.inline-form > select,
+.inline-form > textarea {
+  flex: 1 1 16rem;
+  width: auto;
+  min-width: 0;
+}
+
+.classroom-create-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: end;
+  margin-bottom: 0.75rem;
+}
+
+.classroom-resume-form {
+  margin-bottom: 0.75rem;
+}
+
+.classroom-resume-form > select {
+  width: 100%;
+}
+
+.classroom-action-row {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.85rem;
+}
+
+.hero-action-button {
+  border: 2px solid rgba(255, 255, 255, 0.8);
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.18);
+  font-weight: 700;
+}
+
+.hero-action-button-primary {
+  background: linear-gradient(135deg, #fbbf24, #f97316);
+  color: #3b1d05;
+}
+
+.hero-action-button-secondary {
+  background: #ffffff;
+  color: #0f5f5a;
+}
+
+.classroom-create-form > label {
+  display: grid;
+  gap: 0.4rem;
+  font-weight: 700;
+}
+
+.classroom-create-form > input,
+.classroom-create-form label > input {
+  min-width: 0;
 }
 
 .buzz-button {
@@ -459,6 +523,13 @@ textarea {
 }
 
 @media (max-width: 960px) {
+  .classroom-create-form {
+    grid-template-columns: 1fr;
+  }
+
+  .classroom-action-row > button {
+    width: 100%;
+  }
   .topbar {
     flex-direction: column;
     align-items: start;

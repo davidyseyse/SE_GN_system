@@ -12,7 +12,7 @@ try {
   Wait-ForInfra -RepoRoot $repoRoot
   $apiProcess = Start-ApiProcess -ProjectRoot $projectRoot
   Wait-ForApi
-  Wait-ForPort -HostName "127.0.0.1" -Port 8081
+  Wait-ForPort -HostName "127.0.0.1" -Port $script:ApiTestWebSocketPort
 
   $teacherToken = New-Token -DisplayName "Load Teacher" -Role "TEACHER" -UserId "load-teacher"
   $classroomResponse = Invoke-ApiJson -Method "POST" -Path "/api/classrooms" -Token $teacherToken -Body @{
@@ -28,21 +28,21 @@ try {
 
   $studentTokens = @()
   for ($index = 1; $index -le 100; $index++) {
-    $studentTokens += New-Token -DisplayName "Student $index" -Role "STUDENT" -UserId "load-student-$index"
+    $studentTokens += New-Token -DisplayName "Student $index / $index" -Role "STUDENT" -UserId "load-student-$index"
   }
 
   $joinJobs = foreach ($token in $studentTokens) {
     Start-Job -ScriptBlock {
-      param($activeToken, $activeClassroomCode)
+      param($activeToken, $activeClassroomCode, $apiPort)
       $headers = @{ Authorization = "Bearer $activeToken" }
       $body = @{ classroomCode = $activeClassroomCode } | ConvertTo-Json -Compress
       try {
-        $response = Invoke-WebRequest -Uri "http://localhost:8080/api/classrooms/join" -Method POST -Headers $headers -Body $body -ContentType "application/json" -UseBasicParsing
+        $response = Invoke-WebRequest -Uri "http://localhost:$apiPort/api/classrooms/join" -Method POST -Headers $headers -Body $body -ContentType "application/json" -UseBasicParsing
         return [pscustomobject]@{ ok = ($response.StatusCode -eq 200) }
       } catch {
         return [pscustomobject]@{ ok = $false }
       }
-    } -ArgumentList $token, $classroomCode
+    } -ArgumentList $token, $classroomCode, $script:ApiTestPort
   }
   $joinResults = $joinJobs | Receive-Job -Wait -AutoRemoveJob
   Assert-True (@($joinResults | Where-Object { $_.ok }).Count -eq 100) "Expected 100 successful joins"
@@ -71,19 +71,20 @@ try {
 
   $buzzJobs = foreach ($token in $studentTokens[0..49]) {
     Start-Job -ScriptBlock {
-      param($activeToken, $activeClassroomCode, $activeQuestionId)
+      param($activeToken, $activeClassroomCode, $activeQuestionId, $apiPort)
       $headers = @{ Authorization = "Bearer $activeToken" }
       $body = @{ classroomCode = $activeClassroomCode; questionId = $activeQuestionId; requestId = [guid]::NewGuid().ToString() } | ConvertTo-Json -Compress
       try {
-        $response = Invoke-WebRequest -Uri "http://localhost:8080/api/buzz" -Method POST -Headers $headers -Body $body -ContentType "application/json" -UseBasicParsing
+        $response = Invoke-WebRequest -Uri "http://localhost:$apiPort/api/buzz" -Method POST -Headers $headers -Body $body -ContentType "application/json" -UseBasicParsing
         return $response.Content | ConvertFrom-Json
       } catch {
         return [pscustomobject]@{ accepted = $false }
       }
-    } -ArgumentList $token, $classroomCode, $buzzQuestionId
+    } -ArgumentList $token, $classroomCode, $buzzQuestionId, $script:ApiTestPort
   }
   $buzzResults = $buzzJobs | Receive-Job -Wait -AutoRemoveJob
-  Assert-True (@($buzzResults | Where-Object { $_.accepted -eq $true }).Count -eq 1) "Expected exactly one winner across 50 concurrent buzz attempts"
+  Assert-True (@($buzzResults | Where-Object { $_.accepted -eq $true }).Count -eq 50) "Expected all 50 concurrent buzz attempts to be recorded"
+  Assert-True (@($buzzResults | Where-Object { $_.outcomeStatus -eq "RECORDED" }).Count -eq 50) "Concurrent buzz attempts did not report RECORDED"
 
 $sessionResponse = Invoke-ApiJson -Method "POST" -Path "/api/realtime/session" -Token $studentTokens[0] -Body @{
     classroomCode = $classroomCode

@@ -2,7 +2,7 @@ package com.classroom.api.submission;
 
 import com.classroom.api.auth.AuthContext;
 import com.classroom.api.auth.AuthorizationGuard;
-import com.classroom.api.buzz.BuzzDeadlineService;
+import com.classroom.api.buzz.BuzzAttemptService;
 import com.classroom.api.contract.QuestionState;
 import com.classroom.api.contract.QuestionType;
 import com.classroom.api.contract.Role;
@@ -48,7 +48,7 @@ public final class SubmissionController {
   private final RealtimeEventBroker eventBroker;
   private final GoogleSheetsSyncService googleSheetsSyncService;
   private final BuzzRoundRepository buzzRoundRepository;
-  private final BuzzDeadlineService buzzDeadlineService;
+  private final BuzzAttemptService buzzAttemptService;
   private final QuestionItemRepository questionItemRepository;
   private final QuestionPackageService questionPackageService;
 
@@ -63,7 +63,7 @@ public final class SubmissionController {
       RealtimeEventBroker eventBroker,
       GoogleSheetsSyncService googleSheetsSyncService,
       BuzzRoundRepository buzzRoundRepository,
-      BuzzDeadlineService buzzDeadlineService,
+      BuzzAttemptService buzzAttemptService,
       QuestionItemRepository questionItemRepository,
       QuestionPackageService questionPackageService
   ) {
@@ -77,7 +77,7 @@ public final class SubmissionController {
     this.eventBroker = eventBroker;
     this.googleSheetsSyncService = googleSheetsSyncService;
     this.buzzRoundRepository = buzzRoundRepository;
-    this.buzzDeadlineService = buzzDeadlineService;
+    this.buzzAttemptService = buzzAttemptService;
     this.questionItemRepository = questionItemRepository;
     this.questionPackageService = questionPackageService;
   }
@@ -120,10 +120,26 @@ public final class SubmissionController {
           decision.reviewStatus() == null ? now : null,
           SheetAnswerFormatter.extractGroupNumber(user.displayName()),
           false,
-          false
+          false,
+          winnerSubmission
       );
+      ClassroomScoringPolicy scoringPolicy = ClassroomScoringPolicy.fromSettings(
+          classroom.participationSettings());
+      BuzzAttemptService.SubmissionResult buzzResult = null;
       if (winnerSubmission) {
-        buzzDeadlineService.saveWinnerSubmission(submission, roundNumber);
+        buzzResult = buzzAttemptService.saveFastestSubmission(
+            submission, roundNumber, scoringPolicy.successfulBuzzLimit());
+        if (!buzzResult.accepted()) {
+          HttpResponses.json(exchange, 200, Map.of(
+              "accepted", false,
+              "outcomeStatus", buzzResult.outcomeStatus(),
+              "groupNumber", submission.groupNumber() == null ? 0 : submission.groupNumber(),
+              "groupSuccessfulBuzzCount", submission.groupNumber() == null
+                  ? 0 : classroomRepository.globalGroupSuccessfulBuzzCount(submission.groupNumber()),
+              "successfulBuzzLimit", scoringPolicy.successfulBuzzLimit()
+          ));
+          return;
+        }
       } else {
         submissionRepository.save(submission, roundNumber);
       }
@@ -142,6 +158,12 @@ public final class SubmissionController {
             now
         ));
       }
+      if (winnerSubmission && scoringPolicy.buzzBonus() != 0) {
+        int runningTotal = scoreRepository.currentTotal(classroom.id(), user.id()) + scoringPolicy.buzzBonus();
+        scoreRepository.save(new ScoreRecordEntity(
+            UUID.randomUUID(), classroom.id(), user.id(), question.id(), "BUZZ_BONUS",
+            scoringPolicy.buzzBonus(), runningTotal, now));
+      }
 
       eventBroker.publish(classroom.classroomCode(), "SUBMISSION_CREATED", Map.of(
           "submissionId", submission.id().toString(),
@@ -159,10 +181,16 @@ public final class SubmissionController {
       ));
 
       HttpResponses.json(exchange, 200, Map.of(
+          "accepted", true,
+          "outcomeStatus", "ACCEPTED",
           "submissionId", submission.id().toString(),
           "isCorrect", decision.isCorrect() == null ? "" : decision.isCorrect().toString(),
           "awardedScore", decision.awardedScore() == null ? "" : decision.awardedScore().toString(),
-          "reviewStatus", decision.reviewStatus() == null ? "" : decision.reviewStatus()
+          "reviewStatus", decision.reviewStatus() == null ? "" : decision.reviewStatus(),
+          "groupNumber", submission.groupNumber() == null ? 0 : submission.groupNumber(),
+          "groupSuccessfulBuzzCount", buzzResult == null || submission.groupNumber() == null
+              ? 0 : buzzResult.groupSuccessfulBuzzCount(),
+          "successfulBuzzLimit", scoringPolicy.successfulBuzzLimit()
       ));
     };
   }
@@ -235,7 +263,8 @@ public final class SubmissionController {
           Instant.now(),
           submission.groupNumber(),
           submission.enteredByTeacher(),
-          submission.groupChallenged()
+          submission.groupChallenged(),
+          submission.buzzWinner()
       );
       submissionRepository.updateReview(reviewed);
 
@@ -299,7 +328,8 @@ public final class SubmissionController {
           submission.reviewedAt(),
           groupNumber,
           submission.enteredByTeacher(),
-          true
+          true,
+          submission.buzzWinner()
       );
       submissionRepository.updateAnswer(updated);
 
@@ -348,7 +378,7 @@ public final class SubmissionController {
       SubmissionEntity submission = new SubmissionEntity(
           UUID.randomUUID(), classroom.id(), question.id(), actor.id(), 1,
           request.getOrDefault("answer", ""), "RECEIVED", null, null,
-          "PENDING_REVIEW", Instant.now(), null, groupNumber, true, true);
+          "PENDING_REVIEW", Instant.now(), null, groupNumber, true, true, false);
       submissionRepository.save(submission, roundNumber);
       syncSubmissionToSheet(question, actor, submission);
       eventBroker.publish(classroom.classroomCode(), "SUBMISSION_CREATED", Map.of(

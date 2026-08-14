@@ -18,6 +18,7 @@ public record SubmissionEntity(
     Instant reviewedAt,
     Integer groupNumber,
     boolean enteredByTeacher,
-    boolean groupChallenged
+    boolean groupChallenged,
+    boolean buzzWinner
 ) {
 }

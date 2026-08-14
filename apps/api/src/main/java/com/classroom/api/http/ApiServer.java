@@ -4,7 +4,7 @@ import com.classroom.api.auth.AuthController;
 import com.classroom.api.auth.AuthTokenService;
 import com.classroom.api.auth.AuthorizationGuard;
 import com.classroom.api.buzz.BuzzController;
-import com.classroom.api.buzz.BuzzDeadlineService;
+import com.classroom.api.buzz.BuzzAttemptService;
 import com.classroom.api.classroom.ClassroomController;
 import com.classroom.api.config.ServerConfig;
 import com.classroom.api.data.Database;
@@ -25,7 +25,7 @@ import com.classroom.api.question.QuestionBatchController;
 import com.classroom.api.question.QuestionLifecycleService;
 import com.classroom.api.question.QuestionPackageController;
 import com.classroom.api.question.QuestionPackageService;
-import com.classroom.api.redis.RedisBuzzLockService;
+import com.classroom.api.redis.RedisBuzzSequenceService;
 import com.classroom.api.reporting.ReportingController;
 import com.classroom.api.realtime.RealtimeController;
 import com.classroom.api.realtime.RealtimeEventBroker;
@@ -53,7 +53,6 @@ public final class ApiServer implements AutoCloseable {
   private final HttpServer server;
   private final Router router;
   private final WebSocketServer webSocketServer;
-  private final BuzzDeadlineService buzzDeadlineService;
   private final ExecutorService requestExecutor;
 
   public ApiServer(ServerConfig config) throws IOException {
@@ -62,14 +61,12 @@ public final class ApiServer implements AutoCloseable {
     RouterContext routerContext = buildRouter(config);
     this.router = routerContext.router();
     this.webSocketServer = routerContext.webSocketServer();
-    this.buzzDeadlineService = routerContext.buzzDeadlineService();
     this.requestExecutor = Executors.newCachedThreadPool();
     this.server.createContext("/", new RootHandler(config, this.router));
     this.server.setExecutor(requestExecutor);
   }
 
   public void start() throws IOException {
-    buzzDeadlineService.start();
     try {
       webSocketServer.start();
       server.start();
@@ -81,7 +78,6 @@ public final class ApiServer implements AutoCloseable {
 
   @Override
   public void close() {
-    buzzDeadlineService.close();
     webSocketServer.close();
     server.stop(0);
     requestExecutor.shutdownNow();
@@ -171,16 +167,16 @@ public final class ApiServer implements AutoCloseable {
     ClassroomController classroomController = new ClassroomController(classroomRepository, userRepository, authorizationGuard);
     RealtimeController realtimeController = new RealtimeController(config, eventBroker);
     RealtimeSessionController realtimeSessionController = new RealtimeSessionController(authorizationGuard, eventBroker);
-    RedisBuzzLockService redisBuzzLockService = new RedisBuzzLockService(config);
-    BuzzDeadlineService buzzDeadlineService = new BuzzDeadlineService(
-        database, buzzRepository, submissionRepository, redisBuzzLockService, eventBroker);
+    RedisBuzzSequenceService redisBuzzSequenceService = new RedisBuzzSequenceService(config);
+    BuzzAttemptService buzzAttemptService = new BuzzAttemptService(
+        database, submissionRepository, classroomRepository, eventBroker);
     QuestionLifecycleService questionLifecycleService =
-        new QuestionLifecycleService(database, questionRepository, redisBuzzLockService, eventBroker);
+        new QuestionLifecycleService(database, questionRepository, redisBuzzSequenceService, eventBroker);
     QuestionPackageService questionPackageService =
         new QuestionPackageService(database, questionItemRepository, sheetConfigRepository);
     QuestionController questionController = new QuestionController(
         questionRepository, classroomRepository, userRepository, authorizationGuard, eventBroker,
-        buzzRoundRepository, currentBuzzStatusRepository, questionLifecycleService,
+        buzzRoundRepository, buzzRepository, currentBuzzStatusRepository, questionLifecycleService,
         questionItemRepository, questionPackageService);
     QuestionBatchController questionBatchController =
         new QuestionBatchController(authorizationGuard, classroomRepository, questionRepository, questionLifecycleService);
@@ -188,21 +184,22 @@ public final class ApiServer implements AutoCloseable {
         authorizationGuard, classroomRepository, userRepository, questionRepository,
         questionItemRepository, questionPackageService);
     GoogleSheetsSyncService googleSheetsSyncService = new GoogleSheetsSyncService(config);
-    SheetConfigController sheetConfigController = new SheetConfigController(authorizationGuard, sheetConfigRepository);
+    SheetConfigController sheetConfigController =
+        new SheetConfigController(authorizationGuard, sheetConfigRepository, googleSheetsSyncService);
     BuzzController buzzController = new BuzzController(
         authorizationGuard, classroomRepository, questionRepository, userRepository, buzzRepository,
-        scoreRepository, redisBuzzLockService, buzzDeadlineService, eventBroker,
+        redisBuzzSequenceService, buzzAttemptService, eventBroker,
         buzzRoundRepository, questionLifecycleService, questionItemRepository);
     SubmissionController submissionController = new SubmissionController(
         authorizationGuard, classroomRepository, questionRepository, submissionRepository,
         scoreRepository, sheetConfigRepository, userRepository, eventBroker,
-        googleSheetsSyncService, buzzRoundRepository, buzzDeadlineService, questionItemRepository,
+        googleSheetsSyncService, buzzRoundRepository, buzzAttemptService, questionItemRepository,
         questionPackageService);
     PackageSubmissionController packageSubmissionController = new PackageSubmissionController(
         authorizationGuard, classroomRepository, questionRepository, questionItemRepository,
-        submissionRepository, userRepository, buzzRoundRepository,
+        submissionRepository, userRepository, scoreRepository, buzzRoundRepository,
         sheetConfigRepository, questionPackageService, googleSheetsSyncService, eventBroker,
-        buzzDeadlineService);
+        buzzAttemptService);
     ScoreController scoreController = new ScoreController(authorizationGuard, classroomRepository, userRepository, scoreRepository);
     ReportingController reportingController = new ReportingController(authorizationGuard, classroomRepository, questionRepository, submissionRepository, buzzRepository, scoreRepository, userRepository, auditLogRepository);
     WebSocketServer webSocketServer = new WebSocketServer(config, authTokenService, eventBroker);
@@ -220,11 +217,16 @@ public final class ApiServer implements AutoCloseable {
     router.add("POST", "/api/auth/admin-login", authController.adminLoginHandler());
     router.add("POST", "/api/auth/student-login", authController.studentLoginHandler());
     router.add("POST", "/api/classrooms", classroomController.createClassroomHandler());
+    router.add("GET", "/api/classrooms", classroomController.listClassroomsHandler());
+    router.add("GET", "/api/classrooms/available", classroomController.availableClassroomsHandler());
+    router.add("POST", "/api/classrooms/delete", classroomController.deleteClassroomHandler());
     router.add("POST", "/api/classrooms/join", classroomController.joinClassroomHandler());
     router.add("GET", "/api/sheet-configs", sheetConfigController.listHandler());
     router.add("POST", "/api/sheet-configs", sheetConfigController.createHandler());
     router.add("POST", "/api/sheet-configs/delete", sheetConfigController.deleteHandler());
+    router.add("POST", "/api/sheet-configs/statistics", sheetConfigController.statisticsHandler());
     router.add("GET", "/api/classrooms/members", classroomController.membersHandler());
+    router.add("POST", "/api/classrooms/answer-limits/reset", classroomController.resetAnswerLimitsHandler());
     router.add("GET", "/api/classrooms/presence", classroomController.presenceHandler());
     router.add("POST", "/api/questions", questionController.createQuestionHandler());
     router.add("POST", "/api/question-packages", questionPackageController.createHandler());
@@ -254,13 +256,12 @@ public final class ApiServer implements AutoCloseable {
     router.add("GET", "/api/reports/question", reportingController.questionStatsHandler());
     router.add("GET", "/api/reports/submissions", reportingController.submissionsHandler());
     router.add("GET", "/api/reports/export", reportingController.exportHandler());
-    return new RouterContext(router, webSocketServer, buzzDeadlineService);
+    return new RouterContext(router, webSocketServer);
   }
 
   private record RouterContext(
       Router router,
-      WebSocketServer webSocketServer,
-      BuzzDeadlineService buzzDeadlineService
+      WebSocketServer webSocketServer
   ) {
   }
 }

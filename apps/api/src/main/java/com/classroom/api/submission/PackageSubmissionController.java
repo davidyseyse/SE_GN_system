@@ -2,12 +2,13 @@ package com.classroom.api.submission;
 
 import com.classroom.api.auth.AuthContext;
 import com.classroom.api.auth.AuthorizationGuard;
-import com.classroom.api.buzz.BuzzDeadlineService;
+import com.classroom.api.buzz.BuzzAttemptService;
 import com.classroom.api.contract.QuestionState;
 import com.classroom.api.contract.Role;
 import com.classroom.api.data.model.ClassroomEntity;
 import com.classroom.api.data.model.QuestionEntity;
 import com.classroom.api.data.model.QuestionItemEntity;
+import com.classroom.api.data.model.ScoreRecordEntity;
 import com.classroom.api.data.model.SheetConfigEntity;
 import com.classroom.api.data.model.SubmissionEntity;
 import com.classroom.api.data.model.UserEntity;
@@ -15,6 +16,7 @@ import com.classroom.api.data.repository.BuzzRoundRepository;
 import com.classroom.api.data.repository.ClassroomRepository;
 import com.classroom.api.data.repository.QuestionItemRepository;
 import com.classroom.api.data.repository.QuestionRepository;
+import com.classroom.api.data.repository.ScoreRepository;
 import com.classroom.api.data.repository.SheetConfigRepository;
 import com.classroom.api.data.repository.SubmissionRepository;
 import com.classroom.api.data.repository.UserRepository;
@@ -23,6 +25,7 @@ import com.classroom.api.http.HttpHandlerFunction;
 import com.classroom.api.http.HttpResponses;
 import com.classroom.api.question.QuestionPackageService;
 import com.classroom.api.realtime.RealtimeEventBroker;
+import com.classroom.api.score.ClassroomScoringPolicy;
 import com.classroom.api.sheets.GoogleSheetsSyncService;
 import com.classroom.api.sheets.SheetAnswerFormatter;
 import com.classroom.api.util.JsonParser;
@@ -42,12 +45,13 @@ public final class PackageSubmissionController {
   private final QuestionItemRepository itemRepository;
   private final SubmissionRepository submissionRepository;
   private final UserRepository userRepository;
+  private final ScoreRepository scoreRepository;
   private final BuzzRoundRepository roundRepository;
   private final SheetConfigRepository sheetConfigRepository;
   private final QuestionPackageService packageService;
   private final GoogleSheetsSyncService sheetsSyncService;
   private final RealtimeEventBroker eventBroker;
-  private final BuzzDeadlineService buzzDeadlineService;
+  private final BuzzAttemptService buzzAttemptService;
 
   public PackageSubmissionController(
       AuthorizationGuard authorizationGuard,
@@ -56,12 +60,13 @@ public final class PackageSubmissionController {
       QuestionItemRepository itemRepository,
       SubmissionRepository submissionRepository,
       UserRepository userRepository,
+      ScoreRepository scoreRepository,
       BuzzRoundRepository roundRepository,
       SheetConfigRepository sheetConfigRepository,
       QuestionPackageService packageService,
       GoogleSheetsSyncService sheetsSyncService,
       RealtimeEventBroker eventBroker,
-      BuzzDeadlineService buzzDeadlineService
+      BuzzAttemptService buzzAttemptService
   ) {
     this.authorizationGuard = authorizationGuard;
     this.classroomRepository = classroomRepository;
@@ -69,12 +74,13 @@ public final class PackageSubmissionController {
     this.itemRepository = itemRepository;
     this.submissionRepository = submissionRepository;
     this.userRepository = userRepository;
+    this.scoreRepository = scoreRepository;
     this.roundRepository = roundRepository;
     this.sheetConfigRepository = sheetConfigRepository;
     this.packageService = packageService;
     this.sheetsSyncService = sheetsSyncService;
     this.eventBroker = eventBroker;
-    this.buzzDeadlineService = buzzDeadlineService;
+    this.buzzAttemptService = buzzAttemptService;
   }
 
   public HttpHandlerFunction submitHandler() {
@@ -112,9 +118,25 @@ public final class PackageSubmissionController {
       SubmissionEntity submission = new SubmissionEntity(
           UUID.randomUUID(), classroom.id(), packageId, user.id(), 1, answerJson,
           "RECEIVED", null, null, "PENDING", Instant.now(), null,
-          SheetAnswerFormatter.extractGroupNumber(user.displayName()), false, false);
+          SheetAnswerFormatter.extractGroupNumber(user.displayName()), false, false, winnerSubmission);
+      ClassroomScoringPolicy scoringPolicy = ClassroomScoringPolicy.fromSettings(
+          classroom.participationSettings());
+      BuzzAttemptService.SubmissionResult buzzResult = null;
       if (winnerSubmission) {
-        buzzDeadlineService.saveWinnerSubmission(submission, round);
+        buzzResult = buzzAttemptService.saveFastestSubmission(
+            submission, round, scoringPolicy.successfulBuzzLimit());
+        if (!buzzResult.accepted()) {
+          HttpResponses.json(exchange, 200, Map.of(
+              "accepted", false,
+              "outcomeStatus", buzzResult.outcomeStatus(),
+              "groupNumber", submission.groupNumber() == null ? 0 : submission.groupNumber(),
+              "groupSuccessfulBuzzCount", submission.groupNumber() == null
+                  ? 0 : classroomRepository.globalGroupSuccessfulBuzzCount(submission.groupNumber()),
+              "successfulBuzzLimit", scoringPolicy.successfulBuzzLimit(),
+              "syncStatus", "NOT_REQUIRED"
+          ));
+          return;
+        }
       } else {
         submissionRepository.save(submission, round);
       }
@@ -133,7 +155,9 @@ public final class PackageSubmissionController {
             }
           }
           try {
-            sheetsSyncService.updateCells(config.sheetId(), values);
+            if (!sheetsSyncService.updateCells(config.sheetId(), values)) {
+              throw new IllegalStateException("Google Sheets credentials are not configured");
+            }
             syncStatus = "SYNCED";
             submissionRepository.updateSheetSync(submission.id(), syncStatus, null);
           } catch (RuntimeException exception) {
@@ -141,6 +165,13 @@ public final class PackageSubmissionController {
             submissionRepository.updateSheetSync(submission.id(), syncStatus, exception.getMessage());
           }
         }
+      }
+
+      if (winnerSubmission && scoringPolicy.buzzBonus() != 0) {
+        int runningTotal = scoreRepository.currentTotal(classroom.id(), user.id()) + scoringPolicy.buzzBonus();
+        scoreRepository.save(new ScoreRecordEntity(
+            UUID.randomUUID(), classroom.id(), user.id(), packageId, "BUZZ_BONUS",
+            scoringPolicy.buzzBonus(), runningTotal, Instant.now()));
       }
 
       eventBroker.publish(classroom.classroomCode(), "SUBMISSION_CREATED", Map.of(
@@ -155,8 +186,14 @@ public final class PackageSubmissionController {
           "reviewStatus", submission.reviewStatus()
       ));
       HttpResponses.json(exchange, 200, Map.of(
+          "accepted", true,
+          "outcomeStatus", "ACCEPTED",
           "submissionId", submission.id().toString(),
-          "syncStatus", syncStatus
+          "syncStatus", syncStatus,
+          "groupNumber", submission.groupNumber() == null ? 0 : submission.groupNumber(),
+          "groupSuccessfulBuzzCount", buzzResult == null || submission.groupNumber() == null
+              ? 0 : buzzResult.groupSuccessfulBuzzCount(),
+          "successfulBuzzLimit", scoringPolicy.successfulBuzzLimit()
       ));
     };
   }
@@ -188,7 +225,9 @@ public final class PackageSubmissionController {
             submission.groupNumber()));
       }
       try {
-        sheetsSyncService.updateCells(config.sheetId(), valuesByCell);
+        if (!sheetsSyncService.updateCells(config.sheetId(), valuesByCell)) {
+          throw new IllegalStateException("Google Sheets credentials are not configured");
+        }
         submissionRepository.updateSheetSync(submissionId, "SYNCED", null);
         HttpResponses.json(exchange, 200, Map.of(
             "submissionId", submissionId.toString(),
