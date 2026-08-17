@@ -373,6 +373,33 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_question_items_question_order
   ON question_items (question_id, ordinal);
 
+-- Provenance for packages generated from marker cells. Kept separate so legacy
+-- and manually-authored packages remain valid without source metadata.
+CREATE TABLE IF NOT EXISTS question_item_sheet_bindings (
+  item_id UUID PRIMARY KEY REFERENCES question_items(id) ON DELETE CASCADE,
+  classroom_id UUID NOT NULL REFERENCES classrooms(id) ON DELETE CASCADE,
+  source_sheet_config_id UUID NOT NULL REFERENCES sheet_configs(id),
+  source_worksheet TEXT NOT NULL,
+  source_cell TEXT NOT NULL,
+  source_marker TEXT NOT NULL,
+  answer_sheet_config_id UUID NOT NULL REFERENCES sheet_configs(id),
+  answer_worksheet TEXT NOT NULL,
+  target_cell TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (BTRIM(source_worksheet) <> ''),
+  CHECK (BTRIM(answer_worksheet) <> ''),
+  CHECK (BTRIM(source_cell) <> ''),
+  CHECK (BTRIM(target_cell) <> '')
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_source_binding
+  ON question_item_sheet_bindings
+  (classroom_id, source_sheet_config_id, UPPER(BTRIM(source_worksheet)), UPPER(BTRIM(source_cell)));
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_answer_binding
+  ON question_item_sheet_bindings
+  (classroom_id, answer_sheet_config_id, UPPER(BTRIM(answer_worksheet)), UPPER(BTRIM(target_cell)));
+
 CREATE INDEX IF NOT EXISTS idx_submissions_sheet_sync
   ON submissions (sheet_sync_status)
   WHERE sheet_sync_status = 'RETRYABLE';

@@ -208,6 +208,23 @@ public final class ClassroomController {
     };
   }
 
+  public HttpHandlerFunction resetAnswerLimitsHandler() {
+    return exchange -> {
+      authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
+      Map<String, String> request = parseBody(exchange);
+      String classroomCode = requiredValue(request, "classroomCode");
+      if (classroomRepository.findByCode(classroomCode) == null) {
+        throw new IllegalArgumentException("Classroom not found");
+      }
+
+      int resetGroupCount = classroomRepository.resetCurrentTaipeiDayGlobalGroupSuccessfulBuzzCounts();
+      HttpResponses.json(exchange, 200, Map.of(
+          "status", "ANSWER_LIMITS_RESET",
+          "resetGroupCount", resetGroupCount
+      ));
+    };
+  }
+
   public HttpHandlerFunction presenceHandler() {
     return exchange -> {
       authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT, Role.STUDENT);

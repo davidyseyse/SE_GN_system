@@ -330,6 +330,46 @@ function Reset-GlobalGroupBuzzCounts {
   }
 }
 
+function Set-GlobalGroupBuzzCountForValidation {
+  param(
+    [string]$RepoRoot,
+    [int]$GroupNumber,
+    [string]$DateExpression,
+    [int]$Count
+  )
+  Push-Location $RepoRoot
+  try {
+    Invoke-TestCompose -ComposeArguments @(
+      "exec", "-T", "postgres", "psql", "-U", "classroom", "-d", "classroom",
+      "-v", "ON_ERROR_STOP=1", "-c",
+      "INSERT INTO global_group_buzz_counts (group_number, success_date, successful_buzz_count) VALUES ($GroupNumber, $DateExpression, $Count) ON CONFLICT (group_number, success_date) DO UPDATE SET successful_buzz_count = EXCLUDED.successful_buzz_count;"
+    ) | Out-Null
+  }
+  finally {
+    Pop-Location
+  }
+}
+
+function Query-GlobalGroupBuzzCountForValidation {
+  param(
+    [string]$RepoRoot,
+    [int]$GroupNumber,
+    [string]$DateExpression
+  )
+  Push-Location $RepoRoot
+  try {
+    $value = Invoke-TestCompose -ComposeArguments @(
+      "exec", "-T", "postgres", "psql", "-U", "classroom", "-d", "classroom",
+      "-t", "-A", "-c",
+      "SELECT COALESCE((SELECT successful_buzz_count FROM global_group_buzz_counts WHERE group_number = $GroupNumber AND success_date = $DateExpression), 0);"
+    )
+    return [int]([string]$value).Trim()
+  }
+  finally {
+    Pop-Location
+  }
+}
+
 function Query-QuestionCountByState {
   param(
     [string]$RepoRoot,

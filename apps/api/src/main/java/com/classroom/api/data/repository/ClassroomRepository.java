@@ -262,6 +262,19 @@ public final class ClassroomRepository {
     }
   }
 
+  public int resetCurrentTaipeiDayGlobalGroupSuccessfulBuzzCounts() {
+    String sql = """
+        DELETE FROM global_group_buzz_counts
+        WHERE success_date = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date
+        """;
+    try (Connection connection = database.openConnection();
+         PreparedStatement statement = connection.prepareStatement(sql)) {
+      return statement.executeUpdate();
+    } catch (SQLException exception) {
+      throw new DatabaseException("Unable to reset current-day global group successful buzz counts", exception);
+    }
+  }
+
   public Integer incrementGlobalGroupSuccessfulBuzzCount(
       Connection connection,
       int groupNumber,

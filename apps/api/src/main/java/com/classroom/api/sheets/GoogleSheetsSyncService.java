@@ -19,6 +19,8 @@ import java.security.Signature;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 public final class GoogleSheetsSyncService {
@@ -77,6 +79,75 @@ public final class GoogleSheetsSyncService {
           "Google Sheets batch update failed (HTTP " + response.statusCode() + "): " + response.body());
     }
     return true;
+  }
+
+  public List<String> listWorksheets(String sheetId) {
+    requireCredentials();
+    String url = "https://sheets.googleapis.com/v4/spreadsheets/" + urlEncode(sheetId)
+        + "?fields=sheets.properties.title";
+    HttpResponse<String> response = send(HttpRequest.newBuilder(URI.create(url))
+        .header("Authorization", "Bearer " + getAccessToken()).GET().build(),
+        "Unable to list Google Sheets worksheets");
+    requireSuccess(response, "Google Sheets worksheet lookup failed");
+    Map<String, Object> payload = JsonParser.parseObject(response.body());
+    List<String> titles = new ArrayList<>();
+    Object sheets = payload.get("sheets");
+    if (sheets instanceof List<?> values) {
+      for (Object value : values) {
+        if (value instanceof Map<?, ?> sheet && sheet.get("properties") instanceof Map<?, ?> properties) {
+          Object title = properties.get("title");
+          if (title != null) titles.add(title.toString());
+        }
+      }
+    }
+    return List.copyOf(titles);
+  }
+
+  public List<List<String>> readWorksheet(String sheetId, String worksheet) {
+    requireCredentials();
+    String range = "'" + worksheet.replace("'", "''") + "'";
+    String url = "https://sheets.googleapis.com/v4/spreadsheets/" + urlEncode(sheetId)
+        + "/values/" + urlEncode(range) + "?majorDimension=ROWS&valueRenderOption=FORMATTED_VALUE";
+    HttpResponse<String> response = send(HttpRequest.newBuilder(URI.create(url))
+        .header("Authorization", "Bearer " + getAccessToken()).GET().build(),
+        "Unable to read Google Sheets worksheet");
+    requireSuccess(response, "Google Sheets worksheet read failed");
+    Object values = JsonParser.parseObject(response.body()).get("values");
+    List<List<String>> rows = new ArrayList<>();
+    if (values instanceof List<?> rawRows) {
+      for (Object rawRow : rawRows) {
+        List<String> row = new ArrayList<>();
+        if (rawRow instanceof List<?> cells) {
+          for (Object cell : cells) row.add(cell == null ? "" : cell.toString());
+        }
+        rows.add(List.copyOf(row));
+      }
+    }
+    return List.copyOf(rows);
+  }
+
+  public void verifyWritable(String sheetId) {
+    requireCredentials();
+    String url = "https://sheets.googleapis.com/v4/spreadsheets/" + urlEncode(sheetId) + ":batchUpdate";
+    String sentinel = "__CLASSROOM_WRITE_CHECK_" + java.util.UUID.randomUUID() + "__";
+    String body = "{\"requests\":[{\"findReplace\":{\"find\":\"" + sentinel
+        + "\",\"replacement\":\"" + sentinel + "\",\"allSheets\":true}}]}";
+    HttpResponse<String> response = send(HttpRequest.newBuilder(URI.create(url))
+        .header("Authorization", "Bearer " + getAccessToken())
+        .header("Content-Type", "application/json; charset=utf-8")
+        .POST(HttpRequest.BodyPublishers.ofString(body))
+        .build(), "Unable to verify Google Sheets write access");
+    requireSuccess(response, "Google Sheets destination is not writable");
+  }
+
+  private void requireCredentials() {
+    if (credentials == null) throw new IllegalStateException("Google service account credentials are not configured");
+  }
+
+  private static void requireSuccess(HttpResponse<String> response, String message) {
+    if (response.statusCode() >= 400) {
+      throw new IllegalStateException(message + " (HTTP " + response.statusCode() + "): " + response.body());
+    }
   }
 
   public SheetGroupStatistics.Result readGroupStatistics(String sheetId) {

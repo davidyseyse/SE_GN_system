@@ -49,6 +49,16 @@ test("teacher hides the fixed global group limit and displays usage", () => {
   assert.equal((teacherSource.match(/hero-action-button hero-action-button-secondary/g) ?? []).length, 2);
 });
 
+test("teacher can reset all current-day group answer limits independently", () => {
+  assert.match(teacherSource, /resetAnswerLimits/);
+  assert.match(teacherSource, /確定要重置所有組別的答題限制嗎？/);
+  assert.match(teacherSource, />\s*重置全部題目\s*<\/button>[\s\S]*?>\s*重置答題限制\s*<\/button>/);
+  assert.match(teacherSource, /await resetAnswerLimits\(teacherToken, classroomCode\)/);
+  assert.match(teacherSource, /await getMembers\(teacherToken, classroomCode\)/);
+  assert.match(teacherSource, /已重置所有組別今天的答題限制。/);
+  assert.match(teacherSource, /目前沒有需要重置的答題限制。/);
+});
+
 test("teacher selects owned classrooms and confirms deletion", () => {
   assert.match(teacherSource, /listClassrooms/);
   assert.match(teacherSource, /const \[resumeClassroomCode, setResumeClassroomCode\] = useState\(""\)/);
@@ -145,4 +155,28 @@ test("student prepares complete answers before buzzing and immediately submits",
 
 test("student styles do not reserve space for a countdown", () => {
   assert.doesNotMatch(stylesSource, /\.answer-countdown/);
+});
+
+test("teacher scans independent source and answer worksheets with no mapping mode", () => {
+  assert.match(teacherSource, /sourceSheetConfigId/);
+  assert.match(teacherSource, /answerSheetConfigId/);
+  assert.match(teacherSource, /sourceWorksheet/);
+  assert.match(teacherSource, /answerWorksheet/);
+  assert.match(teacherSource, /自動偵測生成題目/);
+  assert.doesNotMatch(teacherSource, /mappingMode|對應方式/);
+});
+
+test("generated preview supports selection, text edits, confirmation, and cancellation", () => {
+  assert.match(teacherSource, /updateGeneratedPackage/);
+  assert.match(teacherSource, /updateGeneratedItem/);
+  assert.match(teacherSource, /confirmGeneratedQuestions/);
+  assert.match(teacherSource, /setGeneratedScan\(null\)/);
+  assert.match(stylesSource, /\.generated-sheet-selectors/);
+});
+
+test("READY package card provides text-only editing", () => {
+  assert.match(teacherSource, /questionState === "READY"/);
+  assert.match(teacherSource, />編輯<\/button>/);
+  assert.match(teacherSource, /updateQuestionPackageDescriptions/);
+  assert.doesNotMatch(teacherSource, /editingPackageTargetCell/);
 });

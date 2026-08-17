@@ -8,6 +8,10 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@classroom/shared": ["packages/shared/dist/index.d.ts"]
+    },
     "declaration": true,
     "sourceMap": true,
     "outDir": "dist"

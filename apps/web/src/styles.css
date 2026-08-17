@@ -548,3 +548,45 @@ textarea {
     grid-template-columns: 1fr;
   }
 }
+.generated-question-panel {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border-color, #d7dce5);
+}
+
+.generated-sheet-selectors {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.generated-sheet-selectors fieldset,
+.generated-preview fieldset {
+  display: grid;
+  gap: .75rem;
+}
+
+.generated-package-check {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+}
+
+.generated-package-check input {
+  width: auto;
+}
+
+.generated-preview,
+.generated-preview-item,
+.package-description-editor {
+  display: grid;
+  gap: .75rem;
+}
+
+@media (max-width: 720px) {
+  .generated-sheet-selectors {
+    grid-template-columns: 1fr;
+  }
+}
