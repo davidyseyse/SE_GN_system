@@ -85,6 +85,17 @@ Before joining, confirm the teacher dashboard classroom selector starts blank, l
 
 ## Question Package Verification
 
+### Marker-generated packages
+
+1. Share two Google Sheets with the service account, place `[[Q1-1]]`, `[[Q1-2]]`, and `[[Q2]]` in a source worksheet, and leave the same coordinates blank in an answer worksheet.
+2. Select the independent source and answer spreadsheet/worksheet pairs and confirm that nothing happens until `自動偵測生成題目` is pressed.
+3. Confirm the preview groups Q1, creates standalone Q2, ignores images and surrounding text, and maps every item to the same A1 coordinate.
+4. Edit preview descriptions, exclude one package, confirm, and verify only the selection is created in READY state.
+5. Repeat with the exact same spreadsheet and worksheet; verify markers are accepted as destination contents and provenance remains after an answer overwrites a marker.
+6. Verify duplicate markers, occupied destinations, existing source bindings, and existing answer bindings block confirmation; verify numbering gaps warn but do not block.
+7. Edit a READY package using `編輯`, then open it and verify further edits are rejected.
+8. Inspect student list and realtime responses and verify they contain no sheet configuration, worksheet, marker, source cell, or target cell fields.
+
 1. Create a Google Sheet configuration, enter a package title, and confirm the form initially contains only non-removable subquestion 1.
 2. Add subquestions 2 and 3, remove subquestion 2, and confirm the remaining subquestions are numbered 1 and 2 without moving their entered values.
 3. Confirm blank fields, malformed or multi-cell ranges, and duplicate normalized cells keep creation disabled and are rejected by the API.

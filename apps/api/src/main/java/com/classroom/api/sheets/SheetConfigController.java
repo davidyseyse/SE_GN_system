@@ -82,6 +82,20 @@ public final class SheetConfigController {
     };
   }
 
+  public HttpHandlerFunction worksheetsHandler() {
+    return exchange -> {
+      authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
+      Map<String, String> request = parseBody(exchange);
+      UUID configId = UUID.fromString(requiredValue(request, "configId"));
+      SheetConfigEntity config = repository.findById(configId);
+      if (config == null) throw new IllegalArgumentException("Sheet config does not exist");
+      HttpResponses.json(exchange, 200, Map.of(
+          "configId", configId.toString(),
+          "worksheets", sheetsService.listWorksheets(config.sheetId())
+      ));
+    };
+  }
+
   private static Map<String, Object> serialize(SheetConfigEntity config) {
     return Map.of(
         "id", config.id().toString(),

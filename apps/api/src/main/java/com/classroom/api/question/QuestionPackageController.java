@@ -6,9 +6,11 @@ import com.classroom.api.contract.Role;
 import com.classroom.api.data.model.ClassroomEntity;
 import com.classroom.api.data.model.QuestionEntity;
 import com.classroom.api.data.model.QuestionItemEntity;
+import com.classroom.api.data.model.QuestionItemSheetBindingEntity;
 import com.classroom.api.data.model.UserEntity;
 import com.classroom.api.data.repository.ClassroomRepository;
 import com.classroom.api.data.repository.QuestionItemRepository;
+import com.classroom.api.data.repository.QuestionItemSheetBindingRepository;
 import com.classroom.api.data.repository.QuestionRepository;
 import com.classroom.api.data.repository.UserRepository;
 import com.classroom.api.http.HttpExchangeAdapter;
@@ -29,6 +31,7 @@ public final class QuestionPackageController {
   private final QuestionRepository questionRepository;
   private final QuestionItemRepository itemRepository;
   private final QuestionPackageService packageService;
+  private final QuestionItemSheetBindingRepository bindingRepository;
 
   public QuestionPackageController(
       AuthorizationGuard authorizationGuard,
@@ -36,7 +39,8 @@ public final class QuestionPackageController {
       UserRepository userRepository,
       QuestionRepository questionRepository,
       QuestionItemRepository itemRepository,
-      QuestionPackageService packageService
+      QuestionPackageService packageService,
+      QuestionItemSheetBindingRepository bindingRepository
   ) {
     this.authorizationGuard = authorizationGuard;
     this.classroomRepository = classroomRepository;
@@ -44,6 +48,7 @@ public final class QuestionPackageController {
     this.questionRepository = questionRepository;
     this.itemRepository = itemRepository;
     this.packageService = packageService;
+    this.bindingRepository = bindingRepository;
   }
 
   public HttpHandlerFunction createHandler() {
@@ -61,26 +66,51 @@ public final class QuestionPackageController {
       QuestionPackageService.CreatedPackage created = packageService.create(
           classroom.id(), actor.id(), stringValue(request, "title"), sheetConfigId,
           items, score, limit);
-      HttpResponses.json(exchange, 201, Map.of("package", serialize(
+      HttpResponses.json(exchange, 201, Map.of("package", serializeTeacher(
           created.packageEntity(), created.sheetConfigId(), created.items())));
     };
   }
 
   public HttpHandlerFunction listHandler() {
     return exchange -> {
-      authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT, Role.STUDENT);
+      AuthContext auth = authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT, Role.STUDENT);
       ClassroomEntity classroom = requireClassroom(requiredQuery(exchange, "classroomCode"));
       List<Map<String, Object>> packages = questionRepository.listByClassroom(classroom.id()).stream()
-          .map(question -> serialize(
-              question,
-              packageService.findSheetConfigId(question.id()),
-              itemRepository.listByQuestionId(question.id())))
+          .map(question -> auth.role() == Role.STUDENT
+              ? serializeStudent(question, itemRepository.listByQuestionId(question.id()))
+              : serializeTeacher(question, packageService.findSheetConfigId(question.id()),
+                  itemRepository.listByQuestionId(question.id())))
           .toList();
       HttpResponses.json(exchange, 200, Map.of(
           "classroomId", classroom.id().toString(),
           "packages", packages
       ));
     };
+  }
+
+  public HttpHandlerFunction updateDescriptionsHandler() {
+    return exchange -> {
+      authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
+      Map<String, Object> request = parseBody(exchange);
+      ClassroomEntity classroom = requireClassroom(stringValue(request, "classroomCode"));
+      UUID packageId = UUID.fromString(stringValue(request, "packageId"));
+      List<QuestionPackageService.ItemDescription> items = parseDescriptions(request.get("items"));
+      QuestionPackageService.CreatedPackage updated = packageService.updateDescriptions(
+          classroom.id(), packageId, stringValue(request, "title"), items);
+      HttpResponses.json(exchange, 200, Map.of("package", serializeTeacher(updated.packageEntity(),
+          updated.sheetConfigId(), updated.items())));
+    };
+  }
+
+  private static List<QuestionPackageService.ItemDescription> parseDescriptions(Object raw) {
+    if (!(raw instanceof List<?> values)) throw new IllegalArgumentException("items must be an array");
+    List<QuestionPackageService.ItemDescription> items = new ArrayList<>();
+    for (Object value : values) {
+      if (!(value instanceof Map<?, ?> map)) throw new IllegalArgumentException("item must be an object");
+      items.add(new QuestionPackageService.ItemDescription(
+          UUID.fromString(String.valueOf(map.get("itemId"))), String.valueOf(map.get("prompt"))));
+    }
+    return items;
   }
 
   private static List<QuestionPackageService.ItemDraft> parseItems(Object raw) {
@@ -101,7 +131,7 @@ public final class QuestionPackageController {
     return items;
   }
 
-  private static Map<String, Object> serialize(
+  private Map<String, Object> serializeTeacher(
       QuestionEntity question,
       UUID sheetConfigId,
       List<QuestionItemEntity> items
@@ -120,17 +150,36 @@ public final class QuestionPackageController {
     payload.put("answerTimeLimitSeconds",
         question.answerTimeLimitSeconds() == null ? "" : question.answerTimeLimitSeconds().toString());
     payload.put("sheetConfigId", sheetConfigId == null ? "" : sheetConfigId.toString());
-    payload.put("items", items.stream().map(QuestionPackageController::serializeItem).toList());
+    Map<UUID, QuestionItemSheetBindingEntity> bindings = bindingRepository.listByQuestionId(question.id());
+    payload.put("items", items.stream().map(item -> serializeTeacherItem(item, bindings.get(item.id()))).toList());
     return payload;
   }
 
-  private static Map<String, Object> serializeItem(QuestionItemEntity item) {
-    return Map.of(
-        "id", item.id().toString(),
-        "ordinal", item.ordinal(),
-        "prompt", item.prompt(),
-        "targetCell", item.targetCell() == null ? "" : item.targetCell()
-    );
+  private static Map<String, Object> serializeTeacherItem(QuestionItemEntity item,
+      QuestionItemSheetBindingEntity binding) {
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("id", item.id().toString()); payload.put("ordinal", item.ordinal());
+    payload.put("prompt", item.prompt()); payload.put("targetCell", item.targetCell() == null ? "" : item.targetCell());
+    if (binding != null) {
+      payload.put("sourceSheetConfigId", binding.sourceSheetConfigId().toString());
+      payload.put("sourceWorksheet", binding.sourceWorksheet()); payload.put("sourceCell", binding.sourceCell());
+      payload.put("sourceMarker", binding.sourceMarker());
+      payload.put("answerSheetConfigId", binding.answerSheetConfigId().toString());
+      payload.put("answerWorksheet", binding.answerWorksheet());
+    }
+    return payload;
+  }
+
+  private static Map<String, Object> serializeStudent(QuestionEntity question, List<QuestionItemEntity> items) {
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("id", question.id().toString()); payload.put("packageId", question.id().toString());
+    payload.put("questionId", question.id().toString()); payload.put("classroomId", question.classroomId().toString());
+    payload.put("ordinal", question.ordinal()); payload.put("title", question.prompt()); payload.put("prompt", question.prompt());
+    payload.put("type", question.type()); payload.put("state", question.state()); payload.put("score", question.score());
+    payload.put("answerTimeLimitSeconds", question.answerTimeLimitSeconds() == null ? "" : question.answerTimeLimitSeconds().toString());
+    payload.put("items", items.stream().map(item -> Map.<String, Object>of("id", item.id().toString(),
+        "ordinal", item.ordinal(), "prompt", item.prompt())).toList());
+    return payload;
   }
 
   private ClassroomEntity requireClassroom(String code) {

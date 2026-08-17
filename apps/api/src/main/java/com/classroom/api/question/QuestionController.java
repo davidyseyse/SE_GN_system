@@ -7,6 +7,7 @@ import com.classroom.api.contract.Role;
 import com.classroom.api.data.model.ClassroomEntity;
 import com.classroom.api.data.model.CurrentBuzzStatus;
 import com.classroom.api.data.model.QuestionEntity;
+import com.classroom.api.data.model.QuestionItemEntity;
 import com.classroom.api.data.model.UserEntity;
 import com.classroom.api.data.repository.ClassroomRepository;
 import com.classroom.api.data.repository.BuzzRoundRepository;
@@ -199,12 +200,7 @@ public final class QuestionController {
             serialized.put("packageId", question.id().toString());
             serialized.put("title", question.prompt());
             serialized.put("items", questionItemRepository.listByQuestionId(question.id()).stream()
-                .map(item -> Map.<String, Object>of(
-                    "id", item.id().toString(),
-                    "ordinal", item.ordinal(),
-                    "prompt", item.prompt(),
-                    "targetCell", authContext.role() == Role.STUDENT
-                        ? "" : item.targetCell() == null ? "" : item.targetCell()))
+                .map(item -> serializeItem(item, authContext.role()))
                 .toList());
             int roundNumber = buzzRoundRepository.current(question.id());
             serialized.put("roundId", Integer.toString(roundNumber));
@@ -321,6 +317,15 @@ public final class QuestionController {
         "answerKey", showAnswer ? question.answerKey() : "",
         "score", question.score()
     );
+  }
+
+  private static Map<String, Object> serializeItem(QuestionItemEntity item, Role role) {
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("id", item.id().toString());
+    payload.put("ordinal", item.ordinal());
+    payload.put("prompt", item.prompt());
+    if (role != Role.STUDENT) payload.put("targetCell", item.targetCell() == null ? "" : item.targetCell());
+    return payload;
   }
 
   private static String valueOrEmpty(String value) {

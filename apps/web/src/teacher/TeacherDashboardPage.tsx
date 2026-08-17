@@ -4,6 +4,7 @@ import {
   type SubmittedAnswerView,
   type ClassroomView,
   type SheetGroupStatisticsView,
+  type GeneratedQuestionScan,
   batchQuestionAction,
   createClassroom,
   createQuestionPackage,
@@ -14,6 +15,10 @@ import {
   getMembers,
   getSummary,
   getSheetGroupStatistics,
+  listSheetWorksheets,
+  scanGeneratedQuestions,
+  confirmGeneratedQuestions,
+  updateQuestionPackageDescriptions,
   joinClassroom,
   listClassrooms,
   listQuestions,
@@ -107,6 +112,18 @@ export function TeacherDashboardPage() {
   const [statisticsSheetConfigId, setStatisticsSheetConfigId] = useState("");
   const [sheetStatistics, setSheetStatistics] = useState<SheetGroupStatisticsView | null>(null);
   const [statisticsLoading, setStatisticsLoading] = useState(false);
+  const [sourceSheetConfigId, setSourceSheetConfigId] = useState("");
+  const [sourceWorksheets, setSourceWorksheets] = useState<string[]>([]);
+  const [sourceWorksheet, setSourceWorksheet] = useState("");
+  const [answerSheetConfigId, setAnswerSheetConfigId] = useState("");
+  const [answerWorksheets, setAnswerWorksheets] = useState<string[]>([]);
+  const [answerWorksheet, setAnswerWorksheet] = useState("");
+  const [generatedScan, setGeneratedScan] = useState<GeneratedQuestionScan | null>(null);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [sheetAccessError, setSheetAccessError] = useState("");
+  const [editingPackageId, setEditingPackageId] = useState("");
+  const [editingPackageTitle, setEditingPackageTitle] = useState("");
+  const [editingPackageItems, setEditingPackageItems] = useState<Record<string, string>>({});
   const [questions, setQuestions] = useState<QuestionView[]>([]);
   const [answersByQuestionId, setAnswersByQuestionId] = useState<Record<string, SubmittedAnswerView[]>>({});
   const [editingSubmissionId, setEditingSubmissionId] = useState("");
@@ -131,6 +148,36 @@ export function TeacherDashboardPage() {
     void listSheetConfigs(teacherToken).then((result) => setSheetConfigs(result.configs));
     void listClassrooms(teacherToken).then((result) => setTeacherClassrooms(result.classrooms));
   }, [teacherToken]);
+
+  useEffect(() => {
+    setGeneratedScan(null);
+    setSheetAccessError("");
+    setSourceWorksheet("");
+    setSourceWorksheets([]);
+    if (!teacherToken || !sourceSheetConfigId) return;
+    void listSheetWorksheets(teacherToken, sourceSheetConfigId).then((result) => {
+      setSourceWorksheets(result.worksheets);
+      setSourceWorksheet(result.worksheets[0] ?? "");
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : "無法讀取來源工作表";
+      setSheetAccessError(message); setNotice(message);
+    });
+  }, [teacherToken, sourceSheetConfigId]);
+
+  useEffect(() => {
+    setGeneratedScan(null);
+    setSheetAccessError("");
+    setAnswerWorksheet("");
+    setAnswerWorksheets([]);
+    if (!teacherToken || !answerSheetConfigId) return;
+    void listSheetWorksheets(teacherToken, answerSheetConfigId).then((result) => {
+      setAnswerWorksheets(result.worksheets);
+      setAnswerWorksheet(result.worksheets[0] ?? "");
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : "無法讀取答案工作表";
+      setSheetAccessError(message); setNotice(message);
+    });
+  }, [teacherToken, answerSheetConfigId]);
 
   useEffect(() => {
     if (!teacherToken || !classroomCode) {
@@ -298,6 +345,71 @@ export function TeacherDashboardPage() {
     setQuestionPackageTitle("");
     setQuestionItems([{ clientId: crypto.randomUUID(), prompt: "", targetCell: "" }]);
     setNotice("題目已建立。");
+  }
+
+  async function handleScanGeneratedQuestions() {
+    if (!teacherToken || !classroomCode || !sourceSheetConfigId || !sourceWorksheet
+        || !answerSheetConfigId || !answerWorksheet) return;
+    setScanLoading(true);
+    setSheetAccessError("");
+    setGeneratedScan(null);
+    try {
+      const result = await scanGeneratedQuestions(teacherToken, {
+        classroomCode, sourceSheetConfigId, sourceWorksheet, answerSheetConfigId, answerWorksheet
+      });
+      setGeneratedScan(result);
+      setNotice(result.packages.length ? `找到 ${result.packages.length} 個題組。` : "沒有偵測到題目標記。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "自動偵測失敗";
+      setSheetAccessError(message); setNotice(message);
+    } finally {
+      setScanLoading(false);
+    }
+  }
+
+  function updateGeneratedPackage(packageCode: string, field: "title" | "selected", value: string | boolean) {
+    setGeneratedScan((current) => current ? { ...current, packages: current.packages.map((item) =>
+      item.code === packageCode ? { ...item, [field]: value } : item) } : current);
+  }
+
+  function updateGeneratedItem(packageCode: string, sourceCell: string, prompt: string) {
+    setGeneratedScan((current) => current ? { ...current, packages: current.packages.map((item) =>
+      item.code === packageCode ? { ...item, items: item.items.map((child) =>
+        child.sourceCell === sourceCell ? { ...child, prompt } : child) } : item) } : current);
+  }
+
+  async function handleConfirmGeneratedQuestions() {
+    if (!teacherToken || !generatedScan) return;
+    try {
+      const result = await confirmGeneratedQuestions(teacherToken, generatedScan);
+      const refreshed = await listQuestions(teacherToken, classroomCode);
+      setQuestions(refreshed.questions);
+      setGeneratedScan(null);
+      setNotice(`已建立 ${result.createdCount} 個題組。`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "建立自動偵測題目失敗");
+    }
+  }
+
+  function beginPackageEdit(question: QuestionView) {
+    setEditingPackageId(String(question.id));
+    setEditingPackageTitle(String(question.title ?? question.prompt));
+    setEditingPackageItems(Object.fromEntries((question.items ?? []).map((item) => [item.id, item.prompt])));
+  }
+
+  async function handleSavePackageEdit(question: QuestionView) {
+    if (!teacherToken || !classroomCode) return;
+    try {
+      const result = await updateQuestionPackageDescriptions(teacherToken, classroomCode,
+        String(question.id), editingPackageTitle, (question.items ?? []).map((item) => ({
+          itemId: item.id, prompt: editingPackageItems[item.id] ?? ""
+        })));
+      setQuestions((current) => current.map((item) => String(item.id) === String(question.id) ? result.package : item));
+      setEditingPackageId("");
+      setNotice("題目敘述已更新。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "更新題目敘述失敗");
+    }
   }
 
   async function handleStateChange(questionId: string, targetState: string) {
@@ -618,6 +730,51 @@ export function TeacherDashboardPage() {
 
       <div className="panel">
         <h3>題目與儲存格綁定</h3>
+        <section className="generated-question-panel">
+          <h3>自動生成題目</h3>
+          <p className="muted">偵測來源工作表中的 [[Q1]]、[[Q1-1]] 標記，答案固定寫入所選工作表的相同儲存格位置。</p>
+          <div className="generated-sheet-selectors">
+            <fieldset><legend>偵測來源</legend>
+              <label>Google Sheet<select value={sourceSheetConfigId} onChange={(event) => setSourceSheetConfigId(event.target.value)}>
+                <option value="">請選擇 Google Sheet</option>{sheetConfigs.map((config) => <option key={config.id} value={config.id}>{config.name}</option>)}
+              </select></label>
+              <label>工作表<select value={sourceWorksheet} onChange={(event) => { setSourceWorksheet(event.target.value); setGeneratedScan(null); }}>
+                <option value="">請選擇工作表</option>{sourceWorksheets.map((name) => <option key={name} value={name}>{name}</option>)}
+              </select></label>
+            </fieldset>
+            <fieldset><legend>答案寫入位置</legend>
+              <label>Google Sheet<select value={answerSheetConfigId} onChange={(event) => setAnswerSheetConfigId(event.target.value)}>
+                <option value="">請選擇 Google Sheet</option>{sheetConfigs.map((config) => <option key={config.id} value={config.id}>{config.name}</option>)}
+              </select></label>
+              <label>工作表<select value={answerWorksheet} onChange={(event) => { setAnswerWorksheet(event.target.value); setGeneratedScan(null); }}>
+                <option value="">請選擇工作表</option>{answerWorksheets.map((name) => <option key={name} value={name}>{name}</option>)}
+              </select></label>
+            </fieldset>
+          </div>
+          <button disabled={!teacherToken || !classroomCode || !sourceWorksheet || !answerWorksheet || scanLoading}
+            onClick={() => void handleScanGeneratedQuestions()}>{scanLoading ? "偵測中…" : "自動偵測生成題目"}</button>
+          {sheetAccessError ? <p className="notice generated-sheet-error">{sheetAccessError}</p> : null}
+          {generatedScan ? <div className="generated-preview">
+            {generatedScan.errors.map((error) => <p className="notice" key={error}>{error}</p>)}
+            {generatedScan.warnings.map((warning) => <p className="muted" key={warning}>{warning}</p>)}
+            {generatedScan.packages.map((generatedPackage) => <fieldset key={generatedPackage.code} className="question-item-editor">
+              <legend>{generatedPackage.code}</legend>
+              <label className="generated-package-check"><input type="checkbox" checked={generatedPackage.selected}
+                onChange={(event) => updateGeneratedPackage(generatedPackage.code, "selected", event.target.checked)} />建立此題組</label>
+              <label>題組敘述<input value={generatedPackage.title}
+                onChange={(event) => updateGeneratedPackage(generatedPackage.code, "title", event.target.value)} /></label>
+              {generatedPackage.items.map((item, index) => <div className="generated-preview-item" key={item.sourceCell}>
+                <label>子題 {index + 1} 敘述<input value={item.prompt}
+                  onChange={(event) => updateGeneratedItem(generatedPackage.code, item.sourceCell, event.target.value)} /></label>
+                <span className="muted">來源 {sourceWorksheet}!{item.sourceCell} → 寫入 {answerWorksheet}!{item.targetCell}</span>
+                {item.conflicts.map((conflict) => <span className="notice" key={conflict}>{conflict}</span>)}
+              </div>)}
+            </fieldset>)}
+            <div className="action-row"><button type="button" className="secondary-button" onClick={() => setGeneratedScan(null)}>取消</button>
+              <button disabled={generatedScan.errors.length > 0 || !generatedScan.packages.some((item) => item.selected)}
+                onClick={() => void handleConfirmGeneratedQuestions()}>確認建立</button></div>
+          </div> : null}
+        </section>
         <div className="stack-form question-package-form">
           <label>
             選擇表單配置
@@ -716,6 +873,20 @@ export function TeacherDashboardPage() {
                   {buzzStatusLabels[buzzStatus] ?? formatQuestionState(questionState)}
                 </span>
               </div>
+              {editingPackageId === questionId ? (
+                <div className="stack-form package-description-editor">
+                  <label>題組敘述<input value={editingPackageTitle}
+                    onChange={(event) => setEditingPackageTitle(event.target.value)} /></label>
+                  {(question.items ?? []).map((item, index) => <label key={item.id}>子題 {index + 1} 敘述
+                    <input value={editingPackageItems[item.id] ?? ""} onChange={(event) =>
+                      setEditingPackageItems((current) => ({ ...current, [item.id]: event.target.value }))} />
+                  </label>)}
+                  <div className="action-row"><button onClick={() => void handleSavePackageEdit(question)}>儲存</button>
+                    <button type="button" className="secondary-button" onClick={() => setEditingPackageId("")}>取消</button></div>
+                </div>
+              ) : questionState === "READY" ? (
+                <button type="button" className="secondary-button" onClick={() => beginPackageEdit(question)}>編輯</button>
+              ) : null}
               {question.items?.length ? (
                 <ol className="question-item-list">
                   {question.items.map((item) => <li key={item.id}>{item.prompt} → {item.targetCell}</li>)}

@@ -16,6 +16,7 @@ import com.classroom.api.data.repository.ClassroomRepository;
 import com.classroom.api.data.repository.CurrentBuzzStatusRepository;
 import com.classroom.api.data.repository.QuestionRepository;
 import com.classroom.api.data.repository.QuestionItemRepository;
+import com.classroom.api.data.repository.QuestionItemSheetBindingRepository;
 import com.classroom.api.data.repository.ScoreRepository;
 import com.classroom.api.data.repository.SheetConfigRepository;
 import com.classroom.api.data.repository.SubmissionRepository;
@@ -24,6 +25,7 @@ import com.classroom.api.question.QuestionController;
 import com.classroom.api.question.QuestionBatchController;
 import com.classroom.api.question.QuestionLifecycleService;
 import com.classroom.api.question.QuestionPackageController;
+import com.classroom.api.question.GeneratedQuestionController;
 import com.classroom.api.question.QuestionPackageService;
 import com.classroom.api.redis.RedisBuzzSequenceService;
 import com.classroom.api.reporting.ReportingController;
@@ -154,6 +156,8 @@ public final class ApiServer implements AutoCloseable {
     UserRepository userRepository = new UserRepository(database);
     QuestionRepository questionRepository = new QuestionRepository(database);
     QuestionItemRepository questionItemRepository = new QuestionItemRepository(database);
+    QuestionItemSheetBindingRepository questionItemSheetBindingRepository =
+        new QuestionItemSheetBindingRepository(database);
     BuzzRepository buzzRepository = new BuzzRepository(database);
     BuzzRoundRepository buzzRoundRepository = new BuzzRoundRepository(database);
     CurrentBuzzStatusRepository currentBuzzStatusRepository = new CurrentBuzzStatusRepository(database);
@@ -173,17 +177,21 @@ public final class ApiServer implements AutoCloseable {
     QuestionLifecycleService questionLifecycleService =
         new QuestionLifecycleService(database, questionRepository, redisBuzzSequenceService, eventBroker);
     QuestionPackageService questionPackageService =
-        new QuestionPackageService(database, questionItemRepository, sheetConfigRepository);
+        new QuestionPackageService(database, questionItemRepository, sheetConfigRepository,
+            questionItemSheetBindingRepository);
     QuestionController questionController = new QuestionController(
         questionRepository, classroomRepository, userRepository, authorizationGuard, eventBroker,
         buzzRoundRepository, buzzRepository, currentBuzzStatusRepository, questionLifecycleService,
         questionItemRepository, questionPackageService);
     QuestionBatchController questionBatchController =
         new QuestionBatchController(authorizationGuard, classroomRepository, questionRepository, questionLifecycleService);
+    GoogleSheetsSyncService googleSheetsSyncService = new GoogleSheetsSyncService(config);
     QuestionPackageController questionPackageController = new QuestionPackageController(
         authorizationGuard, classroomRepository, userRepository, questionRepository,
-        questionItemRepository, questionPackageService);
-    GoogleSheetsSyncService googleSheetsSyncService = new GoogleSheetsSyncService(config);
+        questionItemRepository, questionPackageService, questionItemSheetBindingRepository);
+    GeneratedQuestionController generatedQuestionController = new GeneratedQuestionController(
+        authorizationGuard, classroomRepository, userRepository, sheetConfigRepository,
+        questionItemSheetBindingRepository, googleSheetsSyncService, questionPackageService);
     SheetConfigController sheetConfigController =
         new SheetConfigController(authorizationGuard, sheetConfigRepository, googleSheetsSyncService);
     BuzzController buzzController = new BuzzController(
@@ -225,12 +233,16 @@ public final class ApiServer implements AutoCloseable {
     router.add("POST", "/api/sheet-configs", sheetConfigController.createHandler());
     router.add("POST", "/api/sheet-configs/delete", sheetConfigController.deleteHandler());
     router.add("POST", "/api/sheet-configs/statistics", sheetConfigController.statisticsHandler());
+    router.add("POST", "/api/sheet-configs/worksheets", sheetConfigController.worksheetsHandler());
     router.add("GET", "/api/classrooms/members", classroomController.membersHandler());
     router.add("POST", "/api/classrooms/answer-limits/reset", classroomController.resetAnswerLimitsHandler());
     router.add("GET", "/api/classrooms/presence", classroomController.presenceHandler());
     router.add("POST", "/api/questions", questionController.createQuestionHandler());
     router.add("POST", "/api/question-packages", questionPackageController.createHandler());
     router.add("GET", "/api/question-packages", questionPackageController.listHandler());
+    router.add("PUT", "/api/question-packages", questionPackageController.updateDescriptionsHandler());
+    router.add("POST", "/api/question-packages/scan", generatedQuestionController.scanHandler());
+    router.add("POST", "/api/question-packages/scan/confirm", generatedQuestionController.confirmHandler());
     router.add("PUT", "/api/questions", questionController.updateQuestionHandler());
     router.add("POST", "/api/questions/archive", questionController.archiveQuestionHandler());
     router.add("POST", "/api/questions/delete", questionController.deleteQuestionHandler());

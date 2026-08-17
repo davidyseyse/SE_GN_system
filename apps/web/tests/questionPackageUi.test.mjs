@@ -156,3 +156,27 @@ test("student prepares complete answers before buzzing and immediately submits",
 test("student styles do not reserve space for a countdown", () => {
   assert.doesNotMatch(stylesSource, /\.answer-countdown/);
 });
+
+test("teacher scans independent source and answer worksheets with no mapping mode", () => {
+  assert.match(teacherSource, /sourceSheetConfigId/);
+  assert.match(teacherSource, /answerSheetConfigId/);
+  assert.match(teacherSource, /sourceWorksheet/);
+  assert.match(teacherSource, /answerWorksheet/);
+  assert.match(teacherSource, /自動偵測生成題目/);
+  assert.doesNotMatch(teacherSource, /mappingMode|對應方式/);
+});
+
+test("generated preview supports selection, text edits, confirmation, and cancellation", () => {
+  assert.match(teacherSource, /updateGeneratedPackage/);
+  assert.match(teacherSource, /updateGeneratedItem/);
+  assert.match(teacherSource, /confirmGeneratedQuestions/);
+  assert.match(teacherSource, /setGeneratedScan\(null\)/);
+  assert.match(stylesSource, /\.generated-sheet-selectors/);
+});
+
+test("READY package card provides text-only editing", () => {
+  assert.match(teacherSource, /questionState === "READY"/);
+  assert.match(teacherSource, />編輯<\/button>/);
+  assert.match(teacherSource, /updateQuestionPackageDescriptions/);
+  assert.doesNotMatch(teacherSource, /editingPackageTargetCell/);
+});

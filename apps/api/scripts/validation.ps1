@@ -47,6 +47,10 @@ try {
     if ($LASTEXITCODE -ne 0) {
       throw "Question package answer-limit validation tests failed with exit code $LASTEXITCODE"
     }
+    java -cp $testClassPath com.classroom.api.question.SheetMarkerScannerTest
+    if ($LASTEXITCODE -ne 0) {
+      throw "Sheet marker scanner tests failed with exit code $LASTEXITCODE"
+    }
   }
 
   $apiProcess = Start-ApiProcess -ProjectRoot $projectRoot
@@ -267,12 +271,42 @@ try {
   $packageItems = @($packageResponse.Body.package.items)
   Assert-True ($packageItems.Count -eq 2) "Question package did not preserve both items"
 
+  $packageDescriptionUpdate = Invoke-ApiJson -Method "PUT" -Path "/api/question-packages" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode
+    packageId = $packageId
+    title = "Updated package title"
+    items = @(
+      @{ itemId = [string]$packageItems[0].id; prompt = "Updated part one" },
+      @{ itemId = [string]$packageItems[1].id; prompt = "Updated part two" }
+    )
+  }
+  Assert-True ($packageDescriptionUpdate.StatusCode -eq 200) "READY package descriptions could not be updated"
+  Assert-True ([string]$packageDescriptionUpdate.Body.package.title -eq "Updated package title") "Package title update was not returned"
+  Assert-True ([string]$packageDescriptionUpdate.Body.package.items[0].targetCell -eq "B1") "Description update changed the package binding"
+
+  $studentPackageView = Invoke-ApiJson -Method "GET" -Path "/api/question-packages?classroomCode=$classroomCode" -Token $studentOneToken -Body $null
+  $studentUpdatedPackage = @($studentPackageView.Body.packages | Where-Object { [string]$_.id -eq $packageId })[0]
+  Assert-True ([string]$studentUpdatedPackage.title -eq "Updated package title") "Student did not receive updated descriptions"
+  Assert-True ($null -eq $studentUpdatedPackage.sheetConfigId) "Student package response exposed a sheet configuration"
+  Assert-True ($null -eq $studentUpdatedPackage.items[0].targetCell) "Student package response exposed a target cell"
+
   $packageTransition = Invoke-ApiJson -Method "POST" -Path "/api/questions/state" -Token $teacherToken -Body @{
     classroomCode = $classroomCode
     questionId = $packageId
     targetState = "BUZZ_OPEN"
   }
   Assert-True ($packageTransition.StatusCode -eq 200) "Question package did not open for buzzing"
+
+  $activePackageDescriptionUpdate = Invoke-ApiJson -Method "PUT" -Path "/api/question-packages" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode
+    packageId = $packageId
+    title = "Must not change"
+    items = @(
+      @{ itemId = [string]$packageItems[0].id; prompt = "Must not change one" },
+      @{ itemId = [string]$packageItems[1].id; prompt = "Must not change two" }
+    )
+  }
+  Assert-True ($activePackageDescriptionUpdate.StatusCode -eq 400) "Active package descriptions were editable"
 
   $itemBuzz = Invoke-ApiJson -Method "POST" -Path "/api/buzz" -Token $studentOneToken -Body @{
     classroomCode = $classroomCode

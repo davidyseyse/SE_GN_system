@@ -50,7 +50,36 @@ export type QuestionItemView = {
   id: string;
   ordinal: number;
   prompt: string;
+  targetCell?: string;
+  sourceSheetConfigId?: string;
+  sourceWorksheet?: string;
+  sourceCell?: string;
+  sourceMarker?: string;
+  answerSheetConfigId?: string;
+  answerWorksheet?: string;
+};
+
+export type GeneratedQuestionItemPreview = {
+  code: string;
+  prompt: string;
+  sourceCell: string;
   targetCell: string;
+  sourceMarker: string;
+  conflicts: string[];
+};
+
+export type GeneratedQuestionPackagePreview = {
+  code: string;
+  title: string;
+  selected: boolean;
+  items: GeneratedQuestionItemPreview[];
+};
+
+export type GeneratedQuestionScan = {
+  scanToken: string;
+  packages: GeneratedQuestionPackagePreview[];
+  warnings: string[];
+  errors: string[];
 };
 
 export type CreateQuestionPackagePayload = {
@@ -202,6 +231,12 @@ export async function getSheetGroupStatistics(token: string, configId: string) {
   }, token);
 }
 
+export async function listSheetWorksheets(token: string, configId: string) {
+  return request<{ configId: string; worksheets: string[] }>("/api/sheet-configs/worksheets", {
+    method: "POST", body: JSON.stringify({ configId })
+  }, token);
+}
+
 export async function joinClassroom(token: string, classroomCode: string) {
   return request<{
     classroom: {
@@ -275,6 +310,32 @@ export async function listQuestionPackages(token: string, classroomCode: string)
     undefined,
     token
   );
+}
+
+export async function scanGeneratedQuestions(token: string, payload: {
+  classroomCode: string;
+  sourceSheetConfigId: string;
+  sourceWorksheet: string;
+  answerSheetConfigId: string;
+  answerWorksheet: string;
+}) {
+  return request<GeneratedQuestionScan>("/api/question-packages/scan", {
+    method: "POST", body: JSON.stringify(payload)
+  }, token);
+}
+
+export async function confirmGeneratedQuestions(token: string, scan: GeneratedQuestionScan) {
+  return request<{ createdCount: number; packages: Array<{ id: string; title: string }> }>(
+    "/api/question-packages/scan/confirm", {
+      method: "POST", body: JSON.stringify({ scanToken: scan.scanToken, packages: scan.packages })
+    }, token);
+}
+
+export async function updateQuestionPackageDescriptions(token: string, classroomCode: string,
+  packageId: string, title: string, items: Array<{ itemId: string; prompt: string }>) {
+  return request<{ package: QuestionView }>("/api/question-packages", {
+    method: "PUT", body: JSON.stringify({ classroomCode, packageId, title, items })
+  }, token);
 }
 
 export async function submitPackageAnswers(
