@@ -302,16 +302,44 @@ export function TeacherDashboardPage() {
     if (!teacherToken) {
       return;
     }
-    await deleteSheetConfig(teacherToken, configId);
-    setSheetConfigs((current) => current.filter((config) => config.id !== configId));
-    if (selectedSheetConfigId === configId) {
-      setSelectedSheetConfigId("");
+    const config = sheetConfigs.find((item) => item.id === configId);
+    const configName = config?.name ?? "此 Google Sheet 配置";
+    if (!window.confirm(
+      `確定要刪除「${configName}」？使用此配置的題目、作答紀錄與搶答紀錄也會一併刪除，且無法復原。`
+    )) {
+      return;
     }
-    if (statisticsSheetConfigId === configId) {
-      setStatisticsSheetConfigId("");
-      setSheetStatistics(null);
+    try {
+      const result = await deleteSheetConfig(teacherToken, configId);
+      setSheetConfigs((current) => current.filter((item) => item.id !== configId));
+      if (selectedSheetConfigId === configId) {
+        setSelectedSheetConfigId("");
+      }
+      if (statisticsSheetConfigId === configId) {
+        setStatisticsSheetConfigId("");
+        setSheetStatistics(null);
+      }
+      if (sourceSheetConfigId === configId) {
+        setSourceSheetConfigId("");
+        setSourceWorksheets([]);
+        setSourceWorksheet("");
+      }
+      if (answerSheetConfigId === configId) {
+        setAnswerSheetConfigId("");
+        setAnswerWorksheets([]);
+        setAnswerWorksheet("");
+      }
+      setGeneratedScan(null);
+      if (classroomCode) {
+        const refreshed = await listQuestions(teacherToken, classroomCode);
+        setQuestions(refreshed.questions);
+      }
+      setNotice(
+        `Google Sheet 配置「${configName}」已刪除，並移除 ${result.deletedPackageCount} 個相關題目。`
+      );
+    } catch (error) {
+      setNotice(error instanceof Error ? `刪除失敗：${error.message}` : "刪除失敗，請稍後再試。");
     }
-    setNotice("Google Sheet 配置已刪除。");
   }
 
   async function handleCalculateSheetStatistics() {
@@ -710,14 +738,14 @@ export function TeacherDashboardPage() {
           <>
             <div className="stat-grid sheet-statistics-summary">
               <div><span>成功組別</span><strong>{sheetStatistics.successfulGroupCount}</strong></div>
-              <div><span>成功答案數</span><strong>{sheetStatistics.totalSuccessfulAnswers}</strong></div>
+              <div><span>總得分</span><strong>{sheetStatistics.totalSuccessfulAnswers}</strong></div>
             </div>
             {sheetStatistics.groups.length > 0 ? (
               <ul className="group-score-list">
                 {sheetStatistics.groups.map((group) => (
                   <li key={group.groupNumber}>
                     <span>第 {group.groupNumber} 組</span>
-                    <strong>{group.successfulAnswerCount} 次</strong>
+                    <strong>{group.successfulAnswerCount} 分</strong>
                   </li>
                 ))}
               </ul>
@@ -732,7 +760,7 @@ export function TeacherDashboardPage() {
         <h3>題目與儲存格綁定</h3>
         <section className="generated-question-panel">
           <h3>自動生成題目</h3>
-          <p className="muted">偵測來源工作表中的 [[Q1]]、[[Q1-1]] 標記，答案固定寫入所選工作表的相同儲存格位置。</p>
+          <p className="muted">偵測來源工作表中的 [[Q1]]、[[Q1-1]] 標記，答案固定寫入所選工作表的相同儲存格位置；學生成功送出答案時會直接覆蓋該格原有的值或公式。</p>
           <div className="generated-sheet-selectors">
             <fieldset><legend>偵測來源</legend>
               <label>Google Sheet<select value={sourceSheetConfigId} onChange={(event) => setSourceSheetConfigId(event.target.value)}>

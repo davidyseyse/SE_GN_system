@@ -218,7 +218,7 @@ export async function createSheetConfig(token: string, name: string, sheetId: st
 }
 
 export async function deleteSheetConfig(token: string, configId: string) {
-  return request<{ deleted: string }>("/api/sheet-configs/delete", {
+  return request<{ deleted: string; deletedPackageCount: number }>("/api/sheet-configs/delete", {
     method: "POST",
     body: JSON.stringify({ configId })
   }, token);

@@ -756,6 +756,16 @@ try {
   $draftCount = Query-QuestionCountByState -RepoRoot $repoRoot -State "DRAFT"
   Assert-True ($draftCount -eq 0) "Legacy DRAFT migration or READY creation left unexpected DRAFT questions"
 
+  $deleteSheetConfigResponse = Invoke-ApiJson -Method "POST" -Path "/api/sheet-configs/delete" -Token $teacherToken -Body @{
+    configId = $sheetConfigId
+  }
+  Assert-True ($deleteSheetConfigResponse.StatusCode -eq 200) "Referenced Sheet configuration could not be deleted"
+  Assert-True ([int]$deleteSheetConfigResponse.Body.deletedPackageCount -ge 1) "Sheet configuration deletion did not report dependent packages"
+  $sheetConfigsAfterDelete = Invoke-ApiJson -Method "GET" -Path "/api/sheet-configs" -Token $teacherToken -Body $null
+  Assert-True (@($sheetConfigsAfterDelete.Body.configs | Where-Object { [string]$_.id -eq $sheetConfigId }).Count -eq 0) "Deleted Sheet configuration remained listed"
+  $packagesAfterSheetDelete = Invoke-ApiJson -Method "GET" -Path "/api/question-packages?classroomCode=$classroomCode" -Token $teacherToken -Body $null
+  Assert-True (@($packagesAfterSheetDelete.Body.packages | Where-Object { [string]$_.id -eq $packageId }).Count -eq 0) "Package depending on deleted Sheet configuration remained listed"
+
   Write-Output "Validation suite passed."
 }
 finally {

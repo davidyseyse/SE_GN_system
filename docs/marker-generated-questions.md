@@ -16,13 +16,13 @@ The teacher explicitly selects a source spreadsheet/worksheet and an answer spre
 
 ## Preview and validation
 
-Scanning does not persist questions. The preview lets a teacher edit package and item descriptions or exclude packages before confirmation. Duplicate markers, mixed standalone/subquestion markers, occupied destinations, previously imported sources, and previously bound answer cells block creation. Numbering gaps are warnings.
+Scanning does not persist questions. The preview lets a teacher edit package and item descriptions or exclude packages before confirmation. Duplicate markers, mixed standalone/subquestion markers, previously imported sources, and previously bound answer cells block creation. Existing answer-cell values and formulas do not block creation; they remain in place until an accepted student answer overwrites them. Numbering gaps are warnings.
 
 Confirmation revalidates the source and creates the selected batch transactionally. The scan token expires after ten minutes. A worksheet change requires a new scan. Scans are limited to 500 markers.
 
 ## Same-cell behavior
 
-When source and answer resolve to the same physical cell, the marker itself is allowed as the initial destination value. A successful student answer later overwrites it. Source spreadsheet, worksheet, cell, and marker provenance remain in PostgreSQL, so duplicate-import detection does not depend on the marker remaining visible.
+When source and answer resolve to the same physical cell, the marker itself is allowed as the initial destination value. Existing values and formulas are also allowed in other destination cells. A successful student answer later overwrites the destination. Source spreadsheet, worksheet, cell, and marker provenance remain in PostgreSQL, so duplicate-import detection does not depend on the marker remaining visible.
 
 ## Visibility and editing
 

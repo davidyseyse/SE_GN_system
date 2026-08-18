@@ -63,8 +63,7 @@ public final class GeneratedQuestionController {
       sheetsService.verifyWritable(answer.sheetId());
       SheetMarkerScanner.ScanResult result = scanner.scan(
           sheetsService.readWorksheet(source.sheetId(), selection.sourceWorksheet()));
-      List<List<String>> answerRows = sheetsService.readWorksheet(answer.sheetId(), selection.answerWorksheet());
-      List<Map<String, Object>> packages = preview(classroom.id(), selection, source, answer, result, answerRows);
+      List<Map<String, Object>> packages = preview(classroom.id(), selection, result);
       String token = UUID.randomUUID().toString();
       scans.put(token, new ScanSnapshot(auth.subject(), Instant.now().plusSeconds(TOKEN_SECONDS), selection,
           signature(result), result));
@@ -98,8 +97,7 @@ public final class GeneratedQuestionController {
         throw new IllegalArgumentException("Source worksheet changed after scanning; scan again");
       }
       if (!current.errors().isEmpty()) throw new IllegalArgumentException("Scan contains blocking marker errors");
-      List<Map<String, Object>> currentPreview = preview(classroom.id(), selection, source, answer, current,
-          sheetsService.readWorksheet(answer.sheetId(), selection.answerWorksheet()));
+      List<Map<String, Object>> currentPreview = preview(classroom.id(), selection, current);
       boolean hasConflict = currentPreview.stream().flatMap(value -> ((List<?>) value.get("items")).stream())
           .filter(Map.class::isInstance).map(Map.class::cast)
           .anyMatch(value -> value.get("conflicts") instanceof List<?> conflicts && !conflicts.isEmpty());
@@ -124,9 +122,11 @@ public final class GeneratedQuestionController {
     };
   }
 
-  private List<Map<String, Object>> preview(UUID classroomId, Selection selection,
-      SheetConfigEntity source, SheetConfigEntity answer, SheetMarkerScanner.ScanResult result,
-      List<List<String>> answerRows) {
+  private List<Map<String, Object>> preview(
+      UUID classroomId,
+      Selection selection,
+      SheetMarkerScanner.ScanResult result
+  ) {
     List<Map<String, Object>> packages = new ArrayList<>();
     for (SheetMarkerScanner.DetectedPackage detectedPackage : result.packages()) {
       List<Map<String, Object>> items = new ArrayList<>();
@@ -136,12 +136,6 @@ public final class GeneratedQuestionController {
             selection.sourceWorksheet(), marker.cell())) conflicts.add("ALREADY_IMPORTED");
         if (bindingRepository.answerExists(classroomId, selection.answerConfigId(),
             selection.answerWorksheet(), marker.cell())) conflicts.add("ANSWER_ALREADY_BOUND");
-        String destinationValue = cellValue(answerRows, marker.cell());
-        boolean samePhysical = source.sheetId().equals(answer.sheetId())
-            && selection.sourceWorksheet().equals(selection.answerWorksheet());
-        if (!destinationValue.isBlank() && !(samePhysical && destinationValue.trim().equalsIgnoreCase(marker.marker()))) {
-          conflicts.add("ANSWER_CELL_OCCUPIED");
-        }
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("code", marker.code()); item.put("prompt", marker.code());
         item.put("sourceCell", marker.cell()); item.put("targetCell", marker.cell());
@@ -209,12 +203,6 @@ public final class GeneratedQuestionController {
   }
   private static String signature(SheetMarkerScanner.ScanResult result) {
     return result.packages().toString() + result.errors();
-  }
-  private static String cellValue(List<List<String>> rows, String a1) {
-    int split = 0; while (split < a1.length() && Character.isLetter(a1.charAt(split))) split++;
-    int column = 0; for (int i = 0; i < split; i++) column = column * 26 + Character.toUpperCase(a1.charAt(i)) - 'A' + 1;
-    int row = Integer.parseInt(a1.substring(split));
-    return row <= rows.size() && column <= rows.get(row - 1).size() ? rows.get(row - 1).get(column - 1) : "";
   }
   private static Map<String, Object> parseBody(HttpExchangeAdapter exchange) throws IOException {
     return JsonParser.parseObject(exchange.readRequestBody());

@@ -8,10 +8,11 @@ Teachers currently create every question package and cell binding manually even 
 - Group `[[Qn-m]]` markers into package `Qn`, while treating `[[Qn]]` as a one-item package, using the normalized marker codes as the default package and item descriptions without reading surrounding cell text or images.
 - Let the teacher independently select a source spreadsheet/worksheet and an answer spreadsheet/worksheet; bind every detected source cell to the same A1 position in the selected answer worksheet.
 - Permit the source and answer selections to refer to different spreadsheets or to the exact same spreadsheet and worksheet.
-- Validate permissions, worksheets, duplicate markers, occupied answer cells, and previously imported source or answer bindings before confirmation.
+- Validate permissions, worksheets, duplicate markers, and previously imported source or answer bindings before confirmation while allowing an existing answer-cell value or formula to be overwritten by the later accepted student answer.
 - Persist source provenance separately from the answer binding so repeated scans can identify existing imports even if a same-cell marker is later overwritten by an answer.
 - Add teacher editing of an existing package title and its item descriptions without changing item identity, order, provenance, or answer-cell bindings.
 - Keep spreadsheet names, worksheet names, source cells, and answer bindings teacher-only; student contracts and views expose only package and item descriptions.
+- Count slash-separated `answer_G<number>` segments in teacher Sheet statistics, awarding each group at most one point per cell.
 
 ## Capabilities
 

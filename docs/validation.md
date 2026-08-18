@@ -3,12 +3,14 @@
 ## Automated Validation
 
 Google Sheet 組別統計人工驗證：在不同工作表放入 `答案_G2`、`答案_G2`、`答案_G5`，教師按「統計分數」後應顯示 2 個成功組別、3 筆成功答案，第 2 組 2 次、第 5 組 1 次。其他結尾應忽略，學生權杖呼叫 `POST /api/sheet-configs/statistics` 應回傳 403。
+另以單格 `fdsfs_G1/ asda_G2` 驗證第 1、2 組各得 1 分；單格 `first_G1/ retry_G1` 僅讓第 1 組得 1 分。
 
 - `npm.cmd run test --workspace @classroom/api`
 
 This runs:
 
 - Java smoke verification
+- referenced Sheet configuration deletion, dependent-package cascade count, and post-delete list checks
 - authorization rejection checks
 - teacher-owned classroom listing, owner-only deletion, and post-delete list checks
 - public minimal classroom listing and student blank-first classroom selection
@@ -92,7 +94,7 @@ Before joining, confirm the teacher dashboard classroom selector starts blank, l
 3. Confirm the preview groups Q1, creates standalone Q2, ignores images and surrounding text, and maps every item to the same A1 coordinate.
 4. Edit preview descriptions, exclude one package, confirm, and verify only the selection is created in READY state.
 5. Repeat with the exact same spreadsheet and worksheet; verify markers are accepted as destination contents and provenance remains after an answer overwrites a marker.
-6. Verify duplicate markers, occupied destinations, existing source bindings, and existing answer bindings block confirmation; verify numbering gaps warn but do not block.
+6. Verify duplicate markers, existing source bindings, and existing answer bindings block confirmation; verify occupied destination values/formulas and numbering gaps do not block, and an accepted student answer overwrites the destination.
 7. Edit a READY package using `編輯`, then open it and verify further edits are rejected.
 8. Inspect student list and realtime responses and verify they contain no sheet configuration, worksheet, marker, source cell, or target cell fields.
 

@@ -1,6 +1,7 @@
 package com.classroom.api.sheets;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -29,9 +30,14 @@ public final class SheetGroupStatistics {
     if (value instanceof Map<?, ?> map) {
       Object formattedValue = map.get("formattedValue");
       if (formattedValue instanceof String text) {
-        Matcher matcher = GROUP_SUFFIX.matcher(text);
-        if (matcher.find()) {
-          int groupNumber = Integer.parseInt(matcher.group(1));
+        HashSet<Integer> cellGroups = new HashSet<>();
+        for (String answer : text.split("[/／]")) {
+          Matcher matcher = GROUP_SUFFIX.matcher(answer);
+          if (matcher.find()) {
+            cellGroups.add(Integer.parseInt(matcher.group(1)));
+          }
+        }
+        for (int groupNumber : cellGroups) {
           counts.merge(groupNumber, 1, Integer::sum);
         }
       }

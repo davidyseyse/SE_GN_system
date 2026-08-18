@@ -55,8 +55,14 @@ public final class SheetConfigController {
       authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
       Map<String, String> request = parseBody(exchange);
       String id = requiredValue(request, "configId");
-      repository.delete(UUID.fromString(id));
-      HttpResponses.json(exchange, 200, Map.of("deleted", id));
+      SheetConfigRepository.DeletionResult result = repository.delete(UUID.fromString(id));
+      if (!result.configDeleted()) {
+        throw new IllegalArgumentException("Sheet config does not exist");
+      }
+      HttpResponses.json(exchange, 200, Map.of(
+          "deleted", id,
+          "deletedPackageCount", result.deletedPackageCount()
+      ));
     };
   }
 

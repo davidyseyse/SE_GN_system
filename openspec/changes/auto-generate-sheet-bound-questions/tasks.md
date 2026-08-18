@@ -42,3 +42,21 @@
 
 - [x] 7.1 Run API, web, migration, and end-to-end validation suites, including existing manual package and Google Sheets answer-sync regression coverage.
 - [x] 7.2 Document service-account read/write permission requirements, marker syntax, duplicate behavior, same-cell overwrite behavior, scan limits, and rollback steps.
+
+## 8. Sheet configuration deletion
+
+- [x] 8.1 Delete answer/source-dependent packages and the selected Sheet configuration atomically, returning the deleted package count.
+- [x] 8.2 Add destructive confirmation, result/error feedback, and client-state cleanup to the teacher interface.
+- [ ] 8.3 Add regression coverage and documentation, then run API/web builds and strict OpenSpec validation.
+
+## 9. Occupied answer-cell overwrite
+
+- [x] 9.1 Stop reading or rejecting existing answer-cell values during generated-question scan and confirmation while retaining write-permission and duplicate-binding validation.
+- [x] 9.2 Explain in the teacher preview that an accepted student answer overwrites existing destination values or formulas.
+- [x] 9.3 Update regression contracts and documentation, then run API/web builds and strict OpenSpec validation.
+
+## 10. Slash-separated group score statistics
+
+- [x] 10.1 Parse slash-separated answers and award each distinct group at most one point per cell while accumulating points across cells.
+- [x] 10.2 Present teacher statistics as points and add multi-group and same-group deduplication regression coverage.
+- [x] 10.3 Update documentation and run API/web builds plus strict OpenSpec validation.

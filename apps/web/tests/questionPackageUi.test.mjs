@@ -79,7 +79,20 @@ test("teacher can calculate linked-sheet group scores on demand", () => {
   assert.match(teacherSource, /sheetStatistics\.successfulGroupCount/);
   assert.match(teacherSource, /sheetStatistics\.totalSuccessfulAnswers/);
   assert.match(teacherSource, /group\.successfulAnswerCount/);
+  assert.match(teacherSource, /總得分/);
+  assert.match(teacherSource, /successfulAnswerCount} 分/);
   assert.match(stylesSource, /\.group-score-list/);
+});
+
+test("teacher confirms sheet configuration cascade deletion and reports affected packages", () => {
+  assert.match(teacherSource, /確定要刪除/);
+  assert.match(teacherSource, /作答紀錄與搶答紀錄也會一併刪除/);
+  assert.match(teacherSource, /const result = await deleteSheetConfig/);
+  assert.match(teacherSource, /result\.deletedPackageCount/);
+  assert.match(teacherSource, /setSourceSheetConfigId\(""\)/);
+  assert.match(teacherSource, /setAnswerSheetConfigId\(""\)/);
+  assert.match(teacherSource, /setGeneratedScan\(null\)/);
+  assert.match(teacherSource, /刪除失敗/);
 });
 
 test("teacher edits current answers inside the question card and removes the legacy review panel", () => {
@@ -164,6 +177,10 @@ test("teacher scans independent source and answer worksheets with no mapping mod
   assert.match(teacherSource, /answerWorksheet/);
   assert.match(teacherSource, /自動偵測生成題目/);
   assert.doesNotMatch(teacherSource, /mappingMode|對應方式/);
+});
+
+test("teacher is warned that accepted answers overwrite occupied destination cells", () => {
+  assert.match(teacherSource, /直接覆蓋該格原有的值或公式/);
 });
 
 test("generated preview supports selection, text edits, confirmation, and cancellation", () => {

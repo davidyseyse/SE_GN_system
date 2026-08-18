@@ -11,7 +11,7 @@ The new workflow treats a marker cell as authoring metadata. It does not infer m
 - Make marker detection deterministic and explicitly teacher-triggered.
 - Support independent source and answer spreadsheet/worksheet selection.
 - Preview and edit generated descriptions before persistence.
-- Prevent duplicate imports and unintended answer-cell overwrites.
+- Prevent duplicate imports while allowing teachers to intentionally replace existing answer-cell contents.
 - Preserve source provenance after marker cells are overwritten.
 - Allow safe editing of existing package and item descriptions.
 - Prevent students from receiving spreadsheet provenance or bindings.
@@ -56,7 +56,7 @@ The confirmation request carries a server-issued scan token plus the selected an
 
 For marker `sourceSpreadsheet/sourceWorksheet!B2`, the answer target is `answerSpreadsheet/answerWorksheet!B2`. Spreadsheet IDs and worksheet names may differ. Identical source and answer spreadsheet/worksheet selections are permitted, in which case the source and target are the same cell.
 
-The answer worksheet must already exist. The service account must be able to read the source and write the answer destination. A nonblank destination blocks confirmation unless the destination is the same physical cell and its value is the marker being imported. This exception permits same-cell authoring without treating the marker as user data that would be overwritten unexpectedly.
+The answer worksheet must already exist and the service account must be able to write it. Existing values and formulas in the mapped answer cells do not block preview or confirmation. Question creation stores only the binding and does not immediately mutate Google Sheets; the accepted student answer later overwrites the existing destination through the normal idempotent values update. An answer coordinate already bound to another active generated item remains a blocking conflict.
 
 ### 4. Persist provenance separately from answer binding
 
@@ -85,10 +85,21 @@ The operation cannot change package code metadata, item IDs, item order, source 
 
 Teacher package-management responses may include provenance and answer-binding details. Student endpoints and realtime payloads use explicit student serializers rather than reusing teacher serializers with client-side hiding. This prevents source or answer locations from being discoverable through browser inspection.
 
+### 8. Delete a Sheet configuration and its dependent packages transactionally
+
+A Sheet configuration may be referenced by manual package answer bindings or by generated-package source and answer provenance. Deleting only the configuration is rejected by PostgreSQL foreign keys and leaves the teacher without actionable feedback. The teacher interface therefore requires an explicit destructive confirmation, and the repository deletes every dependent package before deleting the configuration in one transaction. Package deletion uses the existing cascade relationships for items, submissions, buzz history, scores, and generated bindings.
+
+Packages are considered dependent when their package-level answer configuration matches the deleted configuration or any generated item references it as its source or answer configuration. If any delete fails, the transaction rolls back so neither the configuration nor a partial subset of packages disappears.
+
+### 9. Award at most one point per group per answer cell
+
+Teacher Sheet statistics treat each populated cell as one question score boundary. The parser splits the formatted cell value on ASCII or full-width slash separators, extracts a positive group suffix from each segment using `_G<number>`, and deduplicates group numbers within that cell before incrementing totals. Thus `fdsfs_G1/ asda_G2` awards one point to groups 1 and 2, while `first_G1/ retry_G1` awards only one point to group 1. The same group may receive another point from a different cell.
+
 ## Risks / Trade-offs
 
 - [Same-cell answers destroy visible markers] → Persist provenance at creation; duplicate detection does not depend on the marker remaining visible.
-- [The source changes between scan and confirmation] → Use a short-lived scan token and revalidate marker values, selections, permissions, and occupied destinations on confirmation.
+- [The source changes between scan and confirmation] → Use a short-lived scan token and revalidate marker values, selections, permissions, and existing bindings on confirmation.
+- [An answer overwrites an existing value or formula] → Show the overwrite behavior in the teacher interface and perform the write only after an accepted student submission.
 - [A large spreadsheet makes full grid reads expensive] → Read worksheet values only, impose configured scan bounds/marker limits, and report truncation rather than silently missing markers.
 - [Spreadsheet names and worksheets can be renamed] → Store immutable spreadsheet configuration IDs plus worksheet names used at creation; surface a clear sync error if a destination worksheet later disappears.
 - [Two teachers confirm overlapping scans concurrently] → Database uniqueness constraints are authoritative and the batch transaction converts conflicts into a duplicate-binding response.

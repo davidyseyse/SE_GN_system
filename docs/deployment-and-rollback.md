@@ -12,6 +12,8 @@ Google Sheet 統計需要 `GOOGLE_APPLICATION_CREDENTIALS` 指向有效服務帳
 
 ## Pre-Deploy Checks
 
+Deleting a Sheet configuration transactionally removes every question package that uses it as a source or answer binding, including cascaded submissions, buzz records, and scores. Back up PostgreSQL before using this destructive operation.
+
 1. Run `npm.cmd run build --workspace @classroom/shared`
 2. Run `npm.cmd run build --workspace @classroom/web`
 3. Run `npm.cmd run build --workspace @classroom/api`
