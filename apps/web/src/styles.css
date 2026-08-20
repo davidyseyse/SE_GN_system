@@ -363,11 +363,7 @@ textarea {
   margin: 1rem 0;
 }
 
-.sheet-statistics-summary {
-  margin-bottom: 1rem;
-}
-
-.group-score-list {
+.successful-group-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 0.75rem;
@@ -376,9 +372,9 @@ textarea {
   list-style: none;
 }
 
-.group-score-list li {
+.successful-group-list li {
   display: flex;
-  justify-content: space-between;
+  justify-content: center;
   gap: 1rem;
   padding: 0.85rem 1rem;
   border: 1px solid var(--line);

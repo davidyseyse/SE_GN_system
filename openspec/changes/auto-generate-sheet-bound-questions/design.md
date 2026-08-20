@@ -56,7 +56,7 @@ The confirmation request carries a server-issued scan token plus the selected an
 
 For marker `sourceSpreadsheet/sourceWorksheet!B2`, the answer target is `answerSpreadsheet/answerWorksheet!B2`. Spreadsheet IDs and worksheet names may differ. Identical source and answer spreadsheet/worksheet selections are permitted, in which case the source and target are the same cell.
 
-The answer worksheet must already exist and the service account must be able to write it. Existing values and formulas in the mapped answer cells do not block preview or confirmation. Question creation stores only the binding and does not immediately mutate Google Sheets; the accepted student answer later overwrites the existing destination through the normal idempotent values update. An answer coordinate already bound to another active generated item remains a blocking conflict.
+The answer worksheet must already exist and the service account must be able to write it. Existing values and formulas in the mapped answer cells do not block preview or confirmation. Question creation stores only the binding and does not immediately mutate Google Sheets; the answer selected during teacher review later overwrites the existing destination through the normal idempotent values update. An answer coordinate already bound to another active generated item remains a blocking conflict.
 
 ### 4. Persist provenance separately from answer binding
 
@@ -95,11 +95,38 @@ Packages are considered dependent when their package-level answer configuration 
 
 Teacher Sheet statistics treat each populated cell as one question score boundary. The parser splits the formatted cell value on ASCII or full-width slash separators, extracts a positive group suffix from each segment using `_G<number>`, and deduplicates group numbers within that cell before incrementing totals. Thus `fdsfs_G1/ asda_G2` awards one point to groups 1 and 2, while `first_G1/ retry_G1` awards only one point to group 1. The same group may receive another point from a different cell.
 
+The API retains these counts for compatibility, but the teacher interface treats the result as group membership only. It lists each distinct group number once and deliberately omits per-group points, successful-answer counts, summary cards, and total scores.
+
+### 10. Separate buzz submission receipt from teacher finalization
+
+Submitting a buzz answer creates a pending submission associated with the student's recorded attempt and round. It does not select a winner, increment the global group counter, award a buzz bonus, or call Google Sheets. The response uses a pending outcome so the student can confirm receipt without learning the result early.
+
+Pending submission creation is idempotent on the existing question/user/round/attempt uniqueness boundary. If a client retries after the first response is lost, the service confirms the existing `PENDING_REVIEW` row and returns the same successful pending outcome rather than converting a transport retry into a visible buzz failure. Student notices are keyed by both question ID and round ID so reviewed outcomes cannot leak into a newly opened round.
+
+Before review, client-side rejection and transport paths use submission-retry wording only. They never translate an API outcome into a buzz failure. The student interface reserves success and failure wording for authoritative `BUZZ_SUCCESS` and `BUZZ_FAILED` review statuses returned after finalization.
+
+Teacher challenge editing stores the selected target in `submissions.group_number` and marks `group_challenged`. Because that number represents the challenged group rather than the submitter, the update transaction also deletes the target group's current Taipei-day global success counter so it immediately regains eligibility. During finalization, a challenged candidate consumes the slot for the submitter's original group parsed from the authoritative user display identity, while the challenge target remains unchanged for teacher display and Sheet answer attribution. Repeating the edit is idempotent because deleting an absent daily counter is a no-op.
+
+`完成搶答並檢討` first stops further submissions and then finalizes the round transactionally. Candidates are joined from active attempts and pending submissions and evaluated by receipt order. A candidate whose group has reached the Taipei-day global limit is marked failed and skipped; the first eligible candidate atomically consumes the group's remaining slot and becomes the round's sole winner. Remaining candidates are marked failed. Repeating finalization is idempotent and returns the existing winner.
+
+After the database decision commits, the winner alone is synchronized to Google Sheets. A failed Sheet write is recorded as retryable without changing the winner decision. Realtime review completion causes students to reload their own submission status and display only success or failure; the reason for failure remains hidden.
+
+The classroom-level `完成搶答並檢討` action first stops all active buzz questions, then finalizes them sequentially in the displayed question order. Sequential processing makes the daily cross-classroom group limit deterministic. Each finalized winner is immediately synchronized to its own configured Excel/Google Sheet destination; failures are collected as retryable per submission while later questions continue processing.
+
+Teacher question cards consume the current-round submissions in authoritative receipt order but render at most the first two distinct groups. The first submission for a group owns that group's visible slot; duplicate submissions from the same group and all groups after the first two remain persisted for review logic and auditing but are omitted from the card.
+
+### 11. Make reset-all remove response history transactionally
+
+The classroom-level `RESET_ALL` operation uses a destructive path distinct from single-question reset. For each eligible buzz question, it locks the question row, returns an active or locked state to `READY`, and deletes the question's `submissions` and `buzz_records` within one database transaction. A `READY` question also enters this path so residual response rows cannot survive an earlier state-only reset. Failure rolls back that question while the existing batch result reports the item failure and continues with other questions.
+
+This cleanup intentionally leaves `question_buzz_rounds`, daily global group success counters, score history, and values already synchronized to Google Sheets unchanged. Those records have separate lifecycle controls and must not be silently rolled back by a question-state action. The teacher receives an explicit irreversible-deletion confirmation before the batch request, and successful completion clears cached answer cards.
+
 ## Risks / Trade-offs
 
 - [Same-cell answers destroy visible markers] → Persist provenance at creation; duplicate detection does not depend on the marker remaining visible.
 - [The source changes between scan and confirmation] → Use a short-lived scan token and revalidate marker values, selections, permissions, and existing bindings on confirmation.
-- [An answer overwrites an existing value or formula] → Show the overwrite behavior in the teacher interface and perform the write only after an accepted student submission.
+- [An answer overwrites an existing value or formula] → Show the overwrite behavior in the teacher interface and perform the write only after teacher review accepts the winning submission.
+- [Sheet synchronization fails after winner finalization] → Keep the committed winner and group count, mark the sync retryable, and expose the existing teacher retry action.
 - [A large spreadsheet makes full grid reads expensive] → Read worksheet values only, impose configured scan bounds/marker limits, and report truncation rather than silently missing markers.
 - [Spreadsheet names and worksheets can be renamed] → Store immutable spreadsheet configuration IDs plus worksheet names used at creation; surface a clear sync error if a destination worksheet later disappears.
 - [Two teachers confirm overlapping scans concurrently] → Database uniqueness constraints are authoritative and the batch transaction converts conflicts into a duplicate-binding response.

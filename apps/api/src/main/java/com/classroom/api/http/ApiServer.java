@@ -205,7 +205,7 @@ public final class ApiServer implements AutoCloseable {
         questionPackageService);
     PackageSubmissionController packageSubmissionController = new PackageSubmissionController(
         authorizationGuard, classroomRepository, questionRepository, questionItemRepository,
-        submissionRepository, userRepository, scoreRepository, buzzRoundRepository,
+        submissionRepository, userRepository, buzzRoundRepository,
         sheetConfigRepository, questionPackageService, googleSheetsSyncService, eventBroker,
         buzzAttemptService);
     ScoreController scoreController = new ScoreController(authorizationGuard, classroomRepository, userRepository, scoreRepository);
@@ -255,6 +255,7 @@ public final class ApiServer implements AutoCloseable {
     router.add("POST", "/api/buzz/reset", buzzController.resetHandler());
     router.add("GET", "/api/buzz/history", buzzController.historyHandler());
     router.add("POST", "/api/submissions", submissionController.submitHandler());
+    router.add("POST", "/api/submissions/finalize-buzz", submissionController.finalizeBuzzHandler());
     router.add("POST", "/api/question-packages/answers", packageSubmissionController.submitHandler());
     router.add("POST", "/api/question-packages/answers/retry", packageSubmissionController.retrySyncHandler());
     router.add("GET", "/api/submissions", submissionController.listCurrentHandler());

@@ -19,7 +19,6 @@ import com.classroom.api.http.HttpResponses;
 import com.classroom.api.redis.RedisBuzzSequenceService;
 import com.classroom.api.realtime.RealtimeEventBroker;
 import com.classroom.api.question.QuestionLifecycleService;
-import com.classroom.api.score.ClassroomScoringPolicy;
 import com.classroom.api.sheets.SheetAnswerFormatter;
 import com.classroom.api.util.JsonMapParser;
 import java.time.Instant;
@@ -86,26 +85,10 @@ public final class BuzzController {
       }
       String requestId = request.getOrDefault("requestId", UUID.randomUUID().toString());
       String roundKey = question.id() + ":" + roundNumber;
-      ClassroomScoringPolicy policy = ClassroomScoringPolicy.fromSettings(classroom.participationSettings());
       Integer groupNumber = SheetAnswerFormatter.extractGroupNumber(user.displayName());
       if (groupNumber == null) {
         throw new IllegalArgumentException("Student group number is required");
       }
-      int groupSuccessfulBuzzCount = classroomRepository.globalGroupSuccessfulBuzzCount(groupNumber);
-      if (policy.hasReachedSuccessfulBuzzLimit(groupSuccessfulBuzzCount)) {
-        HttpResponses.json(exchange, 200, Map.of(
-            "accepted", false,
-            "successful", false,
-            "requestId", requestId,
-            "receiptOrder", 0,
-            "outcomeStatus", "SUCCESS_LIMIT_REACHED",
-            "groupNumber", groupNumber,
-            "groupSuccessfulBuzzCount", groupSuccessfulBuzzCount,
-            "successfulBuzzLimit", policy.successfulBuzzLimit()
-        ));
-        return;
-      }
-
       long sequence = redisBuzzSequenceService.nextSequence("buzz:sequence:" + roundKey);
       UUID recordId = UUID.randomUUID();
       Instant now = Instant.now();
@@ -142,9 +125,7 @@ public final class BuzzController {
           "requestId", requestId,
           "receiptOrder", sequence,
           "outcomeStatus", record.outcomeStatus(),
-          "groupNumber", groupNumber,
-          "groupSuccessfulBuzzCount", groupSuccessfulBuzzCount,
-          "successfulBuzzLimit", policy.successfulBuzzLimit()
+          "groupNumber", groupNumber
       ));
     };
   }

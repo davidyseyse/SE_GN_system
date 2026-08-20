@@ -72,16 +72,21 @@ test("teacher selects owned classrooms and confirms deletion", () => {
   assert.match(stylesSource, /\.classroom-resume-form > select/);
 });
 
-test("teacher can calculate linked-sheet group scores on demand", () => {
+test("teacher lists linked-sheet successful groups without scores", () => {
   assert.match(teacherSource, /getSheetGroupStatistics/);
   assert.match(teacherSource, /aria-label="統計用表單配置"/);
-  assert.match(teacherSource, /"統計分數"/);
-  assert.match(teacherSource, /sheetStatistics\.successfulGroupCount/);
-  assert.match(teacherSource, /sheetStatistics\.totalSuccessfulAnswers/);
-  assert.match(teacherSource, /group\.successfulAnswerCount/);
-  assert.match(teacherSource, /總得分/);
-  assert.match(teacherSource, /successfulAnswerCount} 分/);
-  assert.match(stylesSource, /\.group-score-list/);
+  assert.match(teacherSource, /"統計組別"/);
+  assert.match(teacherSource, /第 \{group\.groupNumber\} 組/);
+  assert.doesNotMatch(teacherSource, /sheetStatistics\.successfulGroupCount/);
+  assert.doesNotMatch(teacherSource, /sheetStatistics\.totalSuccessfulAnswers/);
+  assert.doesNotMatch(teacherSource, /group\.successfulAnswerCount/);
+  assert.doesNotMatch(teacherSource, /總得分/);
+  assert.match(stylesSource, /\.successful-group-list/);
+});
+
+test("teacher warns that resetting all questions deletes response records", () => {
+  assert.match(teacherSource, /這會刪除所有題目的作答與搶答紀錄，且無法復原/);
+  assert.match(teacherSource, /await handleBatch\("RESET_ALL"\);\s*setAnswersByQuestionId\(\{\}\);/);
 });
 
 test("teacher confirms sheet configuration cascade deletion and reports affected packages", () => {
@@ -106,8 +111,16 @@ test("teacher edits current answers inside the question card and removes the leg
   assert.match(teacherSource, /parsePackageAnswers\(editingAnswer\)\?\.\[item\.id\]/);
   assert.match(teacherSource, /formatTeacherAnswerAttribution/);
   assert.match(teacherSource, /\/api\/submissions\/answer\/retry/);
+  assert.match(teacherSource, /eligibilityRestored/);
+  assert.match(teacherSource, /已恢復搶答資格/);
   assert.match(teacherSource, /答案已儲存，但 Google Sheets 同步失敗/);
   assert.match(teacherSource, />重試 Google Sheets 同步</);
+});
+
+test("teacher answer cards show only the fastest two distinct groups", () => {
+  assert.match(teacherSource, /fastestDistinctGroupAnswers\(currentAnswers, 2\)/);
+  assert.match(teacherSource, /visibleAnswers\.map\(\(submission\) =>/);
+  assert.doesNotMatch(teacherSource, /currentAnswers\.map\(\(submission\) =>/);
 });
 
 test("student package uses one buzz action, item-keyed answers, and no event feed", () => {
@@ -148,7 +161,7 @@ test("student attempt has no countdown or deadline", () => {
   assert.match(studentSource, /ownBuzzAttemptRecorded/);
 });
 
-test("student prepares complete answers before buzzing and immediately submits", () => {
+test("student submits complete buzz answers pending teacher review", () => {
   assert.match(studentSource, /setLocallyBuzzedQuestionIds/);
   assert.match(studentSource, /arePackageAnswersComplete/);
   assert.match(studentSource, /完成所有答案後即可搶答/);
@@ -156,14 +169,47 @@ test("student prepares complete answers before buzzing and immediately submits",
   assert.match(studentSource, /const buzzResult = await submitBuzz/);
   assert.match(studentSource, /const submissionResult = await submitPackageAnswers/);
   assert.match(studentSource, /await cancelBuzz[\s\S]*\.catch/);
-  assert.match(studentSource, /SUCCESS_LIMIT_REACHED/);
-  assert.match(studentSource, /NOT_FASTEST/);
-  assert.match(studentSource, /本次未搶答成功，答案未寫入系統。/);
+  assert.match(studentSource, /答案送出成功，等待老師完成搶答並檢討。/);
+  assert.match(studentSource, /reviewStatus === "BUZZ_SUCCESS"/);
+  assert.match(studentSource, /reviewStatus === "BUZZ_FAILED"/);
+  assert.match(studentSource, /答案尚未成功送出，請再試一次。/);
+  assert.doesNotMatch(studentSource, /本次未搶答成功，答案未寫入系統。/);
+  assert.doesNotMatch(studentSource, /function submissionOutcomeMessage/);
+  assert.doesNotMatch(studentSource, /error instanceof Error \? error\.message : "搶答失敗。"/);
+  assert.match(studentSource, /搶答成功。/);
+  assert.match(studentSource, /搶答失敗，本次答案未寫入。/);
   assert.doesNotMatch(studentSource, /你的組別已達全系統搶答成功上限/);
   assert.doesNotMatch(studentSource, /組已達搶答成功上限/);
   assert.doesNotMatch(studentSource, /groupSuccessfulBuzzCount\}\/\$\{buzzResult\.successfulBuzzLimit/);
   assert.doesNotMatch(studentSource, /已被搶答/);
   assert.doesNotMatch(studentSource, /取消鎖定/);
+});
+
+test("student feedback is scoped to the current question round", () => {
+  assert.match(studentSource, /noticeByInteractionKey/);
+  assert.match(studentSource, /next\[interactionKey\] = "✓ 搶答成功。"/);
+  assert.match(studentSource, /next\[interactionKey\] = "搶答失敗，本次答案未寫入。"/);
+  assert.match(studentSource, /noticeByInteractionKey\[interactionKey\]/);
+  assert.doesNotMatch(studentSource, /noticeByQuestionId\[questionId\]/);
+});
+
+test("teacher finalizes and syncs buzz answers only after stopping the question", () => {
+  assert.match(teacherSource, /finalizeBuzzReview/);
+  assert.match(teacherSource, /await updateQuestionState\(teacherToken, classroomCode, questionId, "LOCKED"\)/);
+  assert.match(teacherSource, /const review = await finalizeBuzzReview/);
+  assert.match(teacherSource, /搶答結果已完成，但 Google Sheets 同步失敗/);
+  assert.match(teacherSource, /答案已同步到 Google Sheets/);
+});
+
+test("teacher batch completion stops, finalizes, and syncs every active buzz question", () => {
+  assert.match(teacherSource, /async function handleCompleteAllAndReview/);
+  assert.match(teacherSource, /batchQuestionAction\(teacherToken, classroomCode, "STOP_ALL"\)/);
+  assert.match(teacherSource, /for \(const question of reviewTargets\)/);
+  assert.match(teacherSource, /reviews\.push\(await finalizeBuzzReview/);
+  assert.match(teacherSource, /已寫入 Excel／Google Sheets/);
+  assert.match(teacherSource, /同步待重試/);
+  assert.match(teacherSource, /完成搶答並檢討/);
+  assert.doesNotMatch(teacherSource, />\s*停止全部搶答\s*</);
 });
 
 test("student styles do not reserve space for a countdown", () => {
@@ -180,6 +226,7 @@ test("teacher scans independent source and answer worksheets with no mapping mod
 });
 
 test("teacher is warned that accepted answers overwrite occupied destination cells", () => {
+  assert.match(teacherSource, /完成搶答並檢討後/);
   assert.match(teacherSource, /直接覆蓋該格原有的值或公式/);
 });
 

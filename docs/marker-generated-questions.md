@@ -16,7 +16,7 @@ The teacher explicitly selects a source spreadsheet/worksheet and an answer spre
 
 ## Preview and validation
 
-Scanning does not persist questions. The preview lets a teacher edit package and item descriptions or exclude packages before confirmation. Duplicate markers, mixed standalone/subquestion markers, previously imported sources, and previously bound answer cells block creation. Existing answer-cell values and formulas do not block creation; they remain in place until an accepted student answer overwrites them. Numbering gaps are warnings.
+Scanning does not persist questions. The preview lets a teacher edit package and item descriptions or exclude packages before confirmation. Duplicate markers, mixed standalone/subquestion markers, previously imported sources, and previously bound answer cells block creation. Existing answer-cell values and formulas do not block creation; they remain in place until the teacher completes buzz review and the finalized winning answer overwrites them. Numbering gaps are warnings.
 
 Confirmation revalidates the source and creates the selected batch transactionally. The scan token expires after ten minutes. A worksheet change requires a new scan. Scans are limited to 500 markers.
 

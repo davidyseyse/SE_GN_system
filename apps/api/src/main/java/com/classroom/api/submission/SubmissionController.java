@@ -121,29 +121,25 @@ public final class SubmissionController {
           SheetAnswerFormatter.extractGroupNumber(user.displayName()),
           false,
           false,
-          winnerSubmission
+          false
       );
       ClassroomScoringPolicy scoringPolicy = ClassroomScoringPolicy.fromSettings(
           classroom.participationSettings());
       BuzzAttemptService.SubmissionResult buzzResult = null;
       if (winnerSubmission) {
-        buzzResult = buzzAttemptService.saveFastestSubmission(
-            submission, roundNumber, scoringPolicy.successfulBuzzLimit());
+        buzzResult = buzzAttemptService.savePendingSubmission(submission, roundNumber);
         if (!buzzResult.accepted()) {
           HttpResponses.json(exchange, 200, Map.of(
               "accepted", false,
               "outcomeStatus", buzzResult.outcomeStatus(),
-              "groupNumber", submission.groupNumber() == null ? 0 : submission.groupNumber(),
-              "groupSuccessfulBuzzCount", submission.groupNumber() == null
-                  ? 0 : classroomRepository.globalGroupSuccessfulBuzzCount(submission.groupNumber()),
-              "successfulBuzzLimit", scoringPolicy.successfulBuzzLimit()
+              "groupNumber", submission.groupNumber() == null ? 0 : submission.groupNumber()
           ));
           return;
         }
       } else {
         submissionRepository.save(submission, roundNumber);
       }
-      syncSubmissionToSheet(question, user, submission);
+      if (!winnerSubmission) syncSubmissionToSheet(question, user, submission);
 
       if (decision.awardedScore() != null) {
         int runningTotal = scoreRepository.currentTotal(classroom.id(), user.id()) + decision.awardedScore();
@@ -158,13 +154,6 @@ public final class SubmissionController {
             now
         ));
       }
-      if (winnerSubmission && scoringPolicy.buzzBonus() != 0) {
-        int runningTotal = scoreRepository.currentTotal(classroom.id(), user.id()) + scoringPolicy.buzzBonus();
-        scoreRepository.save(new ScoreRecordEntity(
-            UUID.randomUUID(), classroom.id(), user.id(), question.id(), "BUZZ_BONUS",
-            scoringPolicy.buzzBonus(), runningTotal, now));
-      }
-
       eventBroker.publish(classroom.classroomCode(), "SUBMISSION_CREATED", Map.of(
           "submissionId", submission.id().toString(),
           "questionId", question.id().toString(),
@@ -182,16 +171,67 @@ public final class SubmissionController {
 
       HttpResponses.json(exchange, 200, Map.of(
           "accepted", true,
-          "outcomeStatus", "ACCEPTED",
+          "outcomeStatus", winnerSubmission ? "PENDING_REVIEW" : "ACCEPTED",
           "submissionId", submission.id().toString(),
           "isCorrect", decision.isCorrect() == null ? "" : decision.isCorrect().toString(),
           "awardedScore", decision.awardedScore() == null ? "" : decision.awardedScore().toString(),
           "reviewStatus", decision.reviewStatus() == null ? "" : decision.reviewStatus(),
           "groupNumber", submission.groupNumber() == null ? 0 : submission.groupNumber(),
-          "groupSuccessfulBuzzCount", buzzResult == null || submission.groupNumber() == null
-              ? 0 : buzzResult.groupSuccessfulBuzzCount(),
-          "successfulBuzzLimit", scoringPolicy.successfulBuzzLimit()
+          "groupSuccessfulBuzzCount", 0,
+          "successfulBuzzLimit", winnerSubmission ? 0 : scoringPolicy.successfulBuzzLimit()
       ));
+    };
+  }
+
+  public HttpHandlerFunction finalizeBuzzHandler() {
+    return exchange -> {
+      authorizationGuard.requireRoles(exchange, Role.TEACHER, Role.ASSISTANT);
+      Map<String, String> request = JsonMapParser.parseObject(exchange.readRequestBody());
+      ClassroomEntity classroom = requireClassroom(request.get("classroomCode"));
+      QuestionEntity question = requireQuestion(classroom.id(), request.get("questionId"));
+      if (QuestionState.valueOf(question.state()) != QuestionState.LOCKED) {
+        throw new IllegalArgumentException("Buzz review requires a stopped question");
+      }
+
+      int roundNumber = buzzRoundRepository.current(question.id());
+      ClassroomScoringPolicy scoringPolicy = ClassroomScoringPolicy.fromSettings(
+          classroom.participationSettings());
+      BuzzAttemptService.FinalizationResult result = buzzAttemptService.finalizeRound(
+          question.id(), roundNumber, scoringPolicy.successfulBuzzLimit());
+
+      String syncStatus = "NOT_REQUIRED";
+      String syncError = "";
+      if (result.winnerSubmissionId() != null) {
+        SubmissionEntity winner = submissionRepository.findById(result.winnerSubmissionId());
+        UserEntity winnerUser = winner == null ? null : userRepository.findById(winner.userId());
+        if (winner == null || winnerUser == null) {
+          throw new IllegalStateException("Finalized winner submission is unavailable");
+        }
+        SheetSyncOutcome syncOutcome = syncSubmissionToSheet(question, winnerUser, winner);
+        syncStatus = syncOutcome.status();
+        syncError = syncOutcome.error();
+        if (result.newlyFinalized() && scoringPolicy.buzzBonus() != 0) {
+          int runningTotal = scoreRepository.currentTotal(classroom.id(), winner.userId())
+              + scoringPolicy.buzzBonus();
+          scoreRepository.save(new ScoreRecordEntity(
+              UUID.randomUUID(), classroom.id(), winner.userId(), question.id(), "BUZZ_BONUS",
+              scoringPolicy.buzzBonus(), runningTotal, Instant.now()));
+        }
+      }
+
+      Map<String, Object> response = new LinkedHashMap<>();
+      response.put("questionId", question.id().toString());
+      response.put("roundId", Integer.toString(roundNumber));
+      response.put("outcomeStatus", result.outcomeStatus());
+      response.put("winnerSubmissionId", result.winnerSubmissionId() == null
+          ? "" : result.winnerSubmissionId().toString());
+      response.put("winnerUserId", result.winnerUserId() == null ? "" : result.winnerUserId().toString());
+      response.put("winnerGroupNumber", result.winnerGroupNumber() == null ? 0 : result.winnerGroupNumber());
+      response.put("groupSuccessfulBuzzCount", result.groupSuccessfulBuzzCount());
+      response.put("successfulBuzzLimit", scoringPolicy.successfulBuzzLimit());
+      response.put("syncStatus", syncStatus);
+      response.put("syncError", syncError);
+      HttpResponses.json(exchange, 200, response);
     };
   }
 
@@ -331,10 +371,12 @@ public final class SubmissionController {
           true,
           submission.buzzWinner()
       );
-      submissionRepository.updateAnswer(updated);
-
       QuestionEntity question = questionRepository.findById(submission.classroomId(), submission.questionId());
       UserEntity user = userRepository.findById(submission.userId());
+      Integer originalGroupNumber = SheetAnswerFormatter.extractGroupNumber(
+          user == null ? null : user.displayName());
+      boolean eligibilityRestored = originalGroupNumber == null || originalGroupNumber != groupNumber;
+      submissionRepository.updateChallengedAnswer(updated, eligibilityRestored);
       SheetSyncOutcome syncOutcome = syncSubmissionToSheet(question, user, updated);
       ClassroomEntity classroom = classroomRepository.findById(updated.classroomId());
       eventBroker.publish(classroom.classroomCode(), "SUBMISSION_UPDATED", Map.of(
@@ -347,6 +389,7 @@ public final class SubmissionController {
           "submissionId", updated.id().toString(),
           "answer", updated.submittedAnswer(),
           "groupNumber", updated.groupNumber(),
+          "eligibilityRestored", eligibilityRestored,
           "syncStatus", syncOutcome.status(),
           "syncError", syncOutcome.error()
       ));

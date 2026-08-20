@@ -88,7 +88,7 @@ public final class QuestionBatchController {
       case "STOP_ALL" -> state == QuestionState.BUZZ_OPEN || state == QuestionState.ANSWER_OPEN
           ? lifecycleService.transition(classroom, question, QuestionState.LOCKED)
           : skipped(question, "Question is not active");
-      case "RESET_ALL" -> lifecycleService.reset(classroom, question);
+      case "RESET_ALL" -> lifecycleService.resetAndClearRecords(classroom, question);
       default -> throw new IllegalArgumentException("Unsupported batch action");
     };
   }

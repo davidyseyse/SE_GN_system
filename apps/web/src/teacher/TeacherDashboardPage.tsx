@@ -11,6 +11,7 @@ import {
   createSheetConfig,
   deleteClassroom,
   deleteSheetConfig,
+  finalizeBuzzReview,
   getCurrentAnswers,
   getMembers,
   getSummary,
@@ -28,6 +29,7 @@ import {
   updateQuestionState
 } from "../lib/api";
 import { applyTeacherBuzzEvent } from "./teacherBuzzState";
+import { fastestDistinctGroupAnswers } from "./teacherAnswerDisplay";
 import { readSession, writeSession } from "../lib/session";
 import {
   formatPresenceStatus,
@@ -130,7 +132,8 @@ export function TeacherDashboardPage() {
   const [editingAnswer, setEditingAnswer] = useState("");
   const [editingGroupNumber, setEditingGroupNumber] = useState("");
   const [manualQuestionId, setManualQuestionId] = useState("");
-  const [retrySheetSubmissionId, setRetrySheetSubmissionId] = useState("");
+  const [retrySheetSubmissionIds, setRetrySheetSubmissionIds] = useState<Record<string, boolean>>({});
+  const [completingAll, setCompletingAll] = useState(false);
   const [members, setMembers] = useState<Array<Record<string, unknown>>>([]);
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
   const [notice, setNotice] = useState("請先建立課堂，或輸入課堂代碼重返既有課堂。");
@@ -461,10 +464,11 @@ export function TeacherDashboardPage() {
       return;
     }
     if (!questionId) {
-      if (!window.confirm("確定要重置目前課堂所有進行中或已停止的搶答題目嗎？")) {
+      if (!window.confirm("確定要重置全部題目嗎？這會刪除所有題目的作答與搶答紀錄，且無法復原。")) {
         return;
       }
       await handleBatch("RESET_ALL");
+      setAnswersByQuestionId({});
       return;
     }
     await resetBuzz(teacherToken, classroomCode, questionId);
@@ -509,19 +513,104 @@ export function TeacherDashboardPage() {
     );
   }
 
+  async function handleCompleteAllAndReview() {
+    if (!teacherToken || !classroomCode || completingAll) return;
+    const reviewTargets = questions.filter((question) =>
+      String(question.type) === "BUZZ"
+      && ["BUZZ_OPEN", "ANSWER_OPEN", "LOCKED"].includes(String(question.state))
+    );
+    if (reviewTargets.length === 0) {
+      setNotice("目前沒有可完成檢討的搶答題目。");
+      return;
+    }
+
+    setCompletingAll(true);
+    try {
+      const stopResult = await batchQuestionAction(teacherToken, classroomCode, "STOP_ALL");
+      const stopByQuestionId = new Map(stopResult.results.map((item) => [item.questionId, item]));
+      const reviews: Awaited<ReturnType<typeof finalizeBuzzReview>>[] = [];
+      let failedCount = 0;
+
+      // Finalize sequentially so the daily cross-classroom group limit has deterministic ordering.
+      for (const question of reviewTargets) {
+        const questionId = String(question.id);
+        const stopItem = stopByQuestionId.get(questionId);
+        const wasOpen = String(question.state) === "BUZZ_OPEN" || String(question.state) === "ANSWER_OPEN";
+        if (wasOpen && stopItem?.result === "FAILED") {
+          failedCount += 1;
+          continue;
+        }
+        try {
+          reviews.push(await finalizeBuzzReview(teacherToken, classroomCode, questionId));
+        } catch {
+          failedCount += 1;
+        }
+      }
+
+      const [questionResult, memberResult] = await Promise.all([
+        listQuestions(teacherToken, classroomCode),
+        getMembers(teacherToken, classroomCode)
+      ]);
+      setQuestions(questionResult.questions);
+      setMembers(memberResult.members as unknown as Array<Record<string, unknown>>);
+      setClassroomSuccessfulBuzzLimit(memberResult.successfulBuzzLimit);
+
+      setRetrySheetSubmissionIds((current) => {
+        const next = { ...current };
+        for (const review of reviews) {
+          if (!review.winnerSubmissionId) continue;
+          if (review.syncStatus === "RETRYABLE") next[review.winnerSubmissionId] = true;
+          else delete next[review.winnerSubmissionId];
+        }
+        return next;
+      });
+
+      const syncedCount = reviews.filter((review) => review.winnerSubmissionId && review.syncStatus === "SYNCED").length;
+      const retryableCount = reviews.filter((review) => review.winnerSubmissionId && review.syncStatus === "RETRYABLE").length;
+      const noWinnerCount = reviews.filter((review) => !review.winnerSubmissionId).length;
+      const noSyncRequiredCount = reviews.filter((review) => review.winnerSubmissionId && review.syncStatus === "NOT_REQUIRED").length;
+      setNotice(
+        `完成搶答並檢討：已寫入 Excel／Google Sheets ${syncedCount} 題、無成功答案 ${noWinnerCount} 題、不需同步 ${noSyncRequiredCount} 題、同步待重試 ${retryableCount} 題、失敗 ${failedCount} 題。`
+      );
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "完成全部搶答並檢討失敗。");
+    } finally {
+      setCompletingAll(false);
+    }
+  }
+
   async function handleCompleteAndReview(questionId: string) {
     if (!teacherToken || !classroomCode) return;
     const question = questions.find((item) => String(item.id) === questionId);
     const currentState = String(question?.state ?? "");
     if (currentState === "BUZZ_OPEN" || currentState === "ANSWER_OPEN") {
       await updateQuestionState(teacherToken, classroomCode, questionId, "LOCKED");
-      const result = await listQuestions(teacherToken, classroomCode);
-      setQuestions(result.questions);
     } else if (currentState !== "LOCKED") {
       setNotice("請先開放搶答，待學生提交答案後再完成搶答。");
       return;
     }
-    setNotice("搶答已完成，可直接在題目卡中修改學生答案。");
+    if (String(question?.type) !== "BUZZ") {
+      const result = await listQuestions(teacherToken, classroomCode);
+      setQuestions(result.questions);
+      setNotice("作答已停止，可直接在題目卡中檢討或修改答案。");
+      return;
+    }
+    const review = await finalizeBuzzReview(teacherToken, classroomCode, questionId);
+    const [questionResult, memberResult] = await Promise.all([
+      listQuestions(teacherToken, classroomCode),
+      getMembers(teacherToken, classroomCode)
+    ]);
+    setQuestions(questionResult.questions);
+    setMembers(memberResult.members as unknown as Array<Record<string, unknown>>);
+    setClassroomSuccessfulBuzzLimit(memberResult.successfulBuzzLimit);
+    if (!review.winnerSubmissionId) {
+      setNotice("搶答已完成，本輪沒有符合條件的成功答案。");
+    } else if (review.syncStatus === "RETRYABLE") {
+      setRetrySheetSubmissionIds((current) => ({ ...current, [review.winnerSubmissionId]: true }));
+      setNotice("搶答結果已完成，但 Google Sheets 同步失敗，可在答案旁重試同步。");
+    } else {
+      setNotice(`搶答已完成：第 ${review.winnerGroupNumber} 組成功，答案已同步到 Google Sheets。`);
+    }
   }
 
   async function handleUpdateAnswer() {
@@ -529,26 +618,37 @@ export function TeacherDashboardPage() {
       setNotice("請輸入有效的組別。");
       return;
     }
-    const syncResult = await authorizedPost<{ syncStatus: string; syncError: string }>("/api/submissions/answer", teacherToken, {
+    const challengedGroupNumber = Number(editingGroupNumber);
+    const syncResult = await authorizedPost<{
+      syncStatus: string;
+      syncError: string;
+      eligibilityRestored: boolean;
+    }>("/api/submissions/answer", teacherToken, {
       submissionId: editingSubmissionId,
       answer: editingAnswer,
-      groupNumber: Number(editingGroupNumber)
+      groupNumber: challengedGroupNumber
     });
     setAnswersByQuestionId((current) => Object.fromEntries(Object.entries(current).map(([id, answers]) => [
       id,
       answers.map((submission) => submission.submissionId === editingSubmissionId
-        ? { ...submission, answer: editingAnswer, groupNumber: Number(editingGroupNumber), groupChallenged: true }
+        ? { ...submission, answer: editingAnswer, groupNumber: challengedGroupNumber, groupChallenged: true }
         : submission)
     ])));
     setEditingSubmissionId("");
     setEditingAnswer("");
     setEditingGroupNumber("");
     if (syncResult.syncStatus === "RETRYABLE") {
-      setRetrySheetSubmissionId(editingSubmissionId);
+      setRetrySheetSubmissionIds((current) => ({ ...current, [editingSubmissionId]: true }));
       setNotice(`答案已儲存，但 Google Sheets 同步失敗：${syncResult.syncError || "請稍後重試"}`);
     } else {
-      setRetrySheetSubmissionId("");
-      setNotice("學生答案已更新，Google Sheets 同步完成。");
+      setRetrySheetSubmissionIds((current) => {
+        const next = { ...current };
+        delete next[editingSubmissionId];
+        return next;
+      });
+      setNotice(syncResult.eligibilityRestored
+        ? `學生答案已更新，第 ${challengedGroupNumber} 組已恢復搶答資格，Google Sheets 同步完成。`
+        : "學生答案已更新，Google Sheets 同步完成。");
     }
   }
 
@@ -591,7 +691,11 @@ export function TeacherDashboardPage() {
       "/api/submissions/answer/retry", teacherToken, { submissionId }
     );
     if (result.syncStatus === "SYNCED" || result.syncStatus === "NOT_REQUIRED") {
-      setRetrySheetSubmissionId("");
+      setRetrySheetSubmissionIds((current) => {
+        const next = { ...current };
+        delete next[submissionId];
+        return next;
+      });
       setNotice("Google Sheets 重新同步完成。");
     } else {
       setNotice(`Google Sheets 同步仍失敗：${result.syncError || "請稍後重試"}`);
@@ -711,7 +815,7 @@ export function TeacherDashboardPage() {
 
       <div className="panel">
         <h3>搶答成功組別統計</h3>
-        <p className="muted">從所選 Google Sheet 的所有工作表讀取答案，依答案結尾的 _G組號 統計成功次數。</p>
+        <p className="muted">從所選 Google Sheet 的所有工作表讀取答案，列出答案結尾包含 _G組號 的成功組別。</p>
         <div className="inline-form sheet-statistics-controls">
           <select
             aria-label="統計用表單配置"
@@ -731,21 +835,16 @@ export function TeacherDashboardPage() {
             disabled={!teacherToken || !statisticsSheetConfigId || statisticsLoading}
             onClick={() => void handleCalculateSheetStatistics()}
           >
-            {statisticsLoading ? "統計中…" : "統計分數"}
+            {statisticsLoading ? "統計中…" : "統計組別"}
           </button>
         </div>
         {sheetStatistics ? (
           <>
-            <div className="stat-grid sheet-statistics-summary">
-              <div><span>成功組別</span><strong>{sheetStatistics.successfulGroupCount}</strong></div>
-              <div><span>總得分</span><strong>{sheetStatistics.totalSuccessfulAnswers}</strong></div>
-            </div>
             {sheetStatistics.groups.length > 0 ? (
-              <ul className="group-score-list">
+              <ul className="successful-group-list">
                 {sheetStatistics.groups.map((group) => (
                   <li key={group.groupNumber}>
                     <span>第 {group.groupNumber} 組</span>
-                    <strong>{group.successfulAnswerCount} 分</strong>
                   </li>
                 ))}
               </ul>
@@ -760,7 +859,7 @@ export function TeacherDashboardPage() {
         <h3>題目與儲存格綁定</h3>
         <section className="generated-question-panel">
           <h3>自動生成題目</h3>
-          <p className="muted">偵測來源工作表中的 [[Q1]]、[[Q1-1]] 標記，答案固定寫入所選工作表的相同儲存格位置；學生成功送出答案時會直接覆蓋該格原有的值或公式。</p>
+          <p className="muted">偵測來源工作表中的 [[Q1]]、[[Q1-1]] 標記，答案固定寫入所選工作表的相同儲存格位置；完成搶答並檢討後，成功答案會直接覆蓋該格原有的值或公式。</p>
           <div className="generated-sheet-selectors">
             <fieldset><legend>偵測來源</legend>
               <label>Google Sheet<select value={sourceSheetConfigId} onChange={(event) => setSourceSheetConfigId(event.target.value)}>
@@ -864,8 +963,8 @@ export function TeacherDashboardPage() {
           <button disabled={!teacherToken || !classroomCode} onClick={() => void handleBatch("OPEN_ALL")}>
             開放全部搶答
           </button>
-          <button disabled={!teacherToken || !classroomCode} onClick={() => void handleBatch("STOP_ALL")}>
-            停止全部搶答
+          <button disabled={!teacherToken || !classroomCode || completingAll} onClick={() => void handleCompleteAllAndReview()}>
+            {completingAll ? "完成檢討中…" : "完成搶答並檢討"}
           </button>
           <button
             type="button"
@@ -888,6 +987,7 @@ export function TeacherDashboardPage() {
           {questions.map((question) => {
             const questionId = String(question.id);
             const currentAnswers = answersByQuestionId[questionId] ?? [];
+            const visibleAnswers = fastestDistinctGroupAnswers(currentAnswers, 2);
             const questionState = String(question.state);
             const buzzStatus = question.buzzStatus ?? (questionState === "READY" ? "NOT_OPEN" : "");
             const canOpen = questionState === "READY";
@@ -923,7 +1023,7 @@ export function TeacherDashboardPage() {
               {question.winnerDisplayName ? (
                 <p className="question-winner">搶答者：<strong>{question.winnerDisplayName}</strong></p>
               ) : null}
-              {currentAnswers.map((submission) => (
+              {visibleAnswers.map((submission) => (
                 <div key={submission.submissionId} className="submitted-answer">
                   <strong>{formatTeacherAnswerAttribution(submission.displayName, submission.groupNumber, submission.enteredByTeacher, submission.groupChallenged)}</strong>
                   {editingSubmissionId === submission.submissionId ? (
@@ -951,7 +1051,7 @@ export function TeacherDashboardPage() {
                         setEditingAnswer(submission.answer);
                         setEditingGroupNumber(String(submission.groupNumber || ""));
                       }}>修改答案</button>
-                      {retrySheetSubmissionId === submission.submissionId ? (
+                      {retrySheetSubmissionIds[submission.submissionId] ? (
                         <button type="button" className="secondary-button" onClick={() => void handleRetrySheetSync(submission.submissionId)}>重試 Google Sheets 同步</button>
                       ) : null}
                     </>

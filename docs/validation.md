@@ -2,8 +2,8 @@
 
 ## Automated Validation
 
-Google Sheet 組別統計人工驗證：在不同工作表放入 `答案_G2`、`答案_G2`、`答案_G5`，教師按「統計分數」後應顯示 2 個成功組別、3 筆成功答案，第 2 組 2 次、第 5 組 1 次。其他結尾應忽略，學生權杖呼叫 `POST /api/sheet-configs/statistics` 應回傳 403。
-另以單格 `fdsfs_G1/ asda_G2` 驗證第 1、2 組各得 1 分；單格 `first_G1/ retry_G1` 僅讓第 1 組得 1 分。
+Google Sheet 組別統計人工驗證：在不同工作表放入 `答案_G2`、`答案_G2`、`答案_G5`，教師按「統計組別」後應只列出「第 2 組」與「第 5 組」各一次，不顯示成功次數、加給分或總得分。其他結尾應忽略，學生權杖呼叫 `POST /api/sheet-configs/statistics` 應回傳 403。
+另以單格 `fdsfs_G1/ asda_G2` 驗證畫面列出第 1、2 組；單格 `first_G1/ retry_G1` 只列出第 1 組一次。
 
 - `npm.cmd run test --workspace @classroom/api`
 
@@ -55,20 +55,23 @@ Before joining, confirm the teacher dashboard classroom selector starts blank, l
 3. Complete question 1, leave question 2 partially filled, then click “搶答並送出答案” on question 1.
    - Question 1 records the attempt and immediately submits its prepared answers with no personal countdown.
    - Question 2 keeps its draft and its buzz availability unchanged.
-4. Confirm question 1 reports either the accepted fastest answer or a skipped outcome.
+4. Confirm question 1 reports submission success first, then reports success or failure only after the teacher completes review.
+5. Retry the same pending submission (for example after simulating a lost response); confirm it still reports submission success and only one submission row exists.
+6. Reset and reopen the question; confirm the previous round's success/failure notice is absent before the new submission.
    - Submission and notice state change only on question 1.
    - Question 2 remains independently interactive.
-5. Close question 2 from the teacher dashboard.
+7. Close question 2 from the teacher dashboard.
    - Question 2 is removed from the student lobby.
    - Question 1 remains visible and retains its interaction state.
-6. Repeat the original single-question flow.
+8. Repeat the original single-question flow.
    - Attempt recording, unlimited answer time, fastest-answer selection, personal cancellation, and skipped outcomes behave consistently.
 
 ## No Individual Answer Deadline Verification
 
 1. Open a buzz question, let a student prepare an answer, and wait longer than any legacy `answerTimeLimitSeconds` value before buzzing.
 2. Confirm the student still sees the prepared answer with no countdown or timeout notice.
-3. Click “搶答並送出答案” and confirm the fastest active attempt is accepted and synchronized normally.
+3. Click “搶答並送出答案” and confirm the answer shows as submitted but no winner or Sheet write appears yet; then have the teacher click “完成搶答並檢討” and confirm the fastest eligible attempt is selected and synchronized.
+4. Submit in the order group 1, group 1 again, group 2, then group 3; confirm the teacher card shows only the first group 1 answer and the first group 2 answer.
 4. Repeat with two students, explicitly cancel the lowest receipt-order attempt, and confirm the next active attempt becomes eligible.
 
 ## Teacher Batch-Control Verification
@@ -76,14 +79,15 @@ Before joining, confirm the teacher dashboard classroom selector starts blank, l
 1. Create at least two buzz questions and use “開放全部搶答”.
    - Every `READY` buzz question opens with its own new round.
    - Repeating the action does not advance already-open rounds.
-2. Let multiple students buzz, allow the lowest server receipt order to submit, then use “停止全部搶答”.
+2. Let multiple students submit answers for multiple open questions, then use “完成搶答並檢討”. Confirm all active buzz questions stop, finalize sequentially, and write each winning answer to its configured Excel/Google Sheet cell.
    - Active questions become `LOCKED`.
-   - The accepted fastest answer and review state remain visible.
+   - The finalized fastest eligible answer and review state remain visible.
    - New buzz and submission requests are rejected.
 3. Use “重置全部題目” and confirm the warning.
    - Active or locked buzz questions become `READY`.
-   - Finalized questions are skipped and reported.
-   - Opening again creates new rounds while historical records remain queryable.
+   - All answer submissions and buzz history for eligible buzz questions are deleted, including residual records on questions already in `READY`.
+   - The warning states that the deletion cannot be undone, and the teacher answer cards clear after success.
+   - Opening again creates new rounds; daily group limits and values already written to Google Sheets remain unchanged.
 
 ## Question Package Verification
 
@@ -93,8 +97,8 @@ Before joining, confirm the teacher dashboard classroom selector starts blank, l
 2. Select the independent source and answer spreadsheet/worksheet pairs and confirm that nothing happens until `自動偵測生成題目` is pressed.
 3. Confirm the preview groups Q1, creates standalone Q2, ignores images and surrounding text, and maps every item to the same A1 coordinate.
 4. Edit preview descriptions, exclude one package, confirm, and verify only the selection is created in READY state.
-5. Repeat with the exact same spreadsheet and worksheet; verify markers are accepted as destination contents and provenance remains after an answer overwrites a marker.
-6. Verify duplicate markers, existing source bindings, and existing answer bindings block confirmation; verify occupied destination values/formulas and numbering gaps do not block, and an accepted student answer overwrites the destination.
+5. Repeat with the exact same spreadsheet and worksheet; verify markers are accepted as destination contents and provenance remains after the reviewed winner overwrites a marker.
+6. Verify duplicate markers, existing source bindings, and existing answer bindings block confirmation; verify occupied destination values/formulas and numbering gaps do not block, and only the teacher-finalized winning answer overwrites the destination.
 7. Edit a READY package using `編輯`, then open it and verify further edits are rejected.
 8. Inspect student list and realtime responses and verify they contain no sheet configuration, worksheet, marker, source cell, or target cell fields.
 
@@ -103,7 +107,7 @@ Before joining, confirm the teacher dashboard classroom selector starts blank, l
 3. Confirm blank fields, malformed or multi-cell ranges, and duplicate normalized cells keep creation disabled and are rejected by the API.
 4. Create a valid multi-item package and confirm its title, ordered prompts, and bindings survive reload as one package.
 5. Open the package and confirm every student can edit all item answers before buzzing, while incomplete answers keep the buzz button disabled.
-6. Complete all answers in multiple sessions and click “搶答並送出答案” concurrently; confirm the lowest receipt order writes each answer to its bound cell and every skipped attempt creates no submission or Sheet write.
+6. Complete all answers in multiple sessions and click “搶答並送出答案” concurrently; confirm every complete answer is stored as pending and no Sheet cell changes. Click “完成搶答並檢討”; confirm only the lowest eligible receipt order writes each bound cell and all other submissions display failure.
 7. Reset and reopen the package. Confirm the old winner/drafts clear only for that package and the next round accepts a new winner and submission.
 8. Confirm the student page contains no realtime event-history panel while package state and winner changes continue updating without reload.
 
@@ -111,10 +115,11 @@ Before joining, confirm the teacher dashboard classroom selector starts blank, l
 
 1. Create two classrooms; confirm the teacher UI has no success-limit field, then join students A and B with group 1 in different classrooms and student C with group 2.
 2. Let student A submit the fastest answer; confirm every group-1 member row reports group usage `1 / 1`.
-3. Open a question in the other classroom and buzz as student B; confirm the API reports `SUCCESS_LIMIT_REACHED`, with no receipt order, buzz/submission/score row, or Sheets request. Confirm the student UI only says the buzz was unsuccessful and the answer was not written, without mentioning the group count or limit.
-4. Buzz and submit as student C; confirm group 2 is accepted independently and reports `1 / 1`.
+3. Open a question in the other classroom and submit as student B; confirm it is accepted as `PENDING_REVIEW` with no score or Sheets request. Complete teacher review and confirm the internal attempt becomes `SUCCESS_LIMIT_REACHED`, no success score or Sheets write is created, and the student UI only reports failure without mentioning the group count or limit.
+4. Buzz and submit as student C, complete teacher review, and confirm group 2 succeeds independently and reports `1 / 1`.
 5. Run concurrent submissions from the same group number in different classrooms; confirm at most one transaction increments the global group counter and every skipped request produces no Sheets write.
 6. Insert or retain a group count dated before the current Asia/Taipei date; confirm the teacher view reports `0 / 1` for today and the group can win once again.
+7. Give group 2 a current-day success, edit a group-1 student's answer to `挑戰：第2組`, and confirm group 2 immediately reports `0 / 1` and can win again. If the challenge is edited before finalization, confirm the winner remains attributed to group 2 for display/Sheet output while the consumed global slot belongs to group 1.
 
 ## Deployment and Rollback for Question Packages
 

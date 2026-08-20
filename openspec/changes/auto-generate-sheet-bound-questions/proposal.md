@@ -12,7 +12,9 @@ Teachers currently create every question package and cell binding manually even 
 - Persist source provenance separately from the answer binding so repeated scans can identify existing imports even if a same-cell marker is later overwritten by an answer.
 - Add teacher editing of an existing package title and its item descriptions without changing item identity, order, provenance, or answer-cell bindings.
 - Keep spreadsheet names, worksheet names, source cells, and answer bindings teacher-only; student contracts and views expose only package and item descriptions.
-- Count slash-separated `answer_G<number>` segments in teacher Sheet statistics, awarding each group at most one point per cell.
+- Identify slash-separated `answer_G<number>` segments in teacher Sheet statistics and display only the distinct successful groups without scores or totals.
+- Defer buzz winner selection and Google Sheets answer synchronization until the teacher invokes `完成搶答並檢討`; student submissions remain pending and reveal only that they were received until review completes.
+- Restore a challenged group's current-day buzz eligibility while charging a finalized challenged answer to the challenger's original group.
 
 ## Capabilities
 
@@ -29,6 +31,7 @@ Teachers currently create every question package and cell binding manually even 
 
 - Web: teacher source/destination selectors, explicit scan button, preview and validation states, confirmed batch creation, and inline package-description editing.
 - API: Google Sheets worksheet discovery and marker scanning, scan/confirm contracts, duplicate-import checks, package-description update contract, and teacher/student response separation.
+- Buzz workflow: persist every valid submitted attempt, finalize the fastest eligible group on teacher review, enforce the daily cross-classroom group limit at finalization, and publish the final success/failure result.
 - PostgreSQL: source spreadsheet configuration, source worksheet/cell/marker provenance, answer worksheet names, uniqueness constraints, and transactional description updates.
 - Google Sheets: read access to the selected source spreadsheet and write validation for the independently selected answer spreadsheet; images are ignored.
 - Tests: marker grammar and grouping, same-position mapping across spreadsheets, same-source-and-destination behavior, validation and duplicate prevention, authorization, editing restrictions, and student data minimization.

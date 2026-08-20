@@ -369,6 +369,24 @@ export async function updateQuestionState(token: string, classroomCode: string, 
   }, token);
 }
 
+export async function finalizeBuzzReview(token: string, classroomCode: string, questionId: string) {
+  return request<{
+    questionId: string;
+    roundId: string;
+    outcomeStatus: string;
+    winnerSubmissionId: string;
+    winnerUserId: string;
+    winnerGroupNumber: number;
+    groupSuccessfulBuzzCount?: number;
+    successfulBuzzLimit?: number;
+    syncStatus: string;
+    syncError: string;
+  }>("/api/submissions/finalize-buzz", {
+    method: "POST",
+    body: JSON.stringify({ classroomCode, questionId })
+  }, token);
+}
+
 export async function batchQuestionAction(
   token: string,
   classroomCode: string,
@@ -440,8 +458,8 @@ export async function submitBuzz(token: string, classroomCode: string, questionI
     requestId: string;
     receiptOrder: number;
     groupNumber: number;
-    groupSuccessfulBuzzCount: number;
-    successfulBuzzLimit: number;
+    groupSuccessfulBuzzCount?: number;
+    successfulBuzzLimit?: number;
   }>(
     "/api/buzz",
     {
