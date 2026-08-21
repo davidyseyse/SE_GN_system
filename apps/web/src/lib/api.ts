@@ -218,7 +218,7 @@ export async function createSheetConfig(token: string, name: string, sheetId: st
 }
 
 export async function deleteSheetConfig(token: string, configId: string) {
-  return request<{ deleted: string }>("/api/sheet-configs/delete", {
+  return request<{ deleted: string; deletedPackageCount: number }>("/api/sheet-configs/delete", {
     method: "POST",
     body: JSON.stringify({ configId })
   }, token);
@@ -254,7 +254,6 @@ export async function joinClassroom(token: string, classroomCode: string) {
 
 export async function getMembers(token: string, classroomCode: string) {
   return request<{
-    successfulBuzzLimit: number;
     members: Array<ClassroomParticipantContract & {
       presenceStatus: string;
       joinedAt: string;
@@ -351,7 +350,6 @@ export async function submitPackageAnswers(
     syncStatus: string;
     groupNumber: number;
     groupSuccessfulBuzzCount: number;
-    successfulBuzzLimit: number;
   }>(
     "/api/question-packages/answers",
     {
@@ -366,6 +364,23 @@ export async function updateQuestionState(token: string, classroomCode: string, 
   return request<{ question: QuestionView }>("/api/questions/state", {
     method: "POST",
     body: JSON.stringify({ classroomCode, questionId, targetState })
+  }, token);
+}
+
+export async function finalizeBuzzReview(token: string, classroomCode: string, questionId: string) {
+  return request<{
+    questionId: string;
+    roundId: string;
+    outcomeStatus: string;
+    winnerSubmissionId: string;
+    winnerUserId: string;
+    winnerGroupNumber: number;
+    groupSuccessfulBuzzCount?: number;
+    syncStatus: string;
+    syncError: string;
+  }>("/api/submissions/finalize-buzz", {
+    method: "POST",
+    body: JSON.stringify({ classroomCode, questionId })
   }, token);
 }
 
@@ -440,8 +455,7 @@ export async function submitBuzz(token: string, classroomCode: string, questionI
     requestId: string;
     receiptOrder: number;
     groupNumber: number;
-    groupSuccessfulBuzzCount: number;
-    successfulBuzzLimit: number;
+    groupSuccessfulBuzzCount?: number;
   }>(
     "/api/buzz",
     {

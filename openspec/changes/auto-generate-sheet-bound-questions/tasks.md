@@ -42,3 +42,70 @@
 
 - [x] 7.1 Run API, web, migration, and end-to-end validation suites, including existing manual package and Google Sheets answer-sync regression coverage.
 - [x] 7.2 Document service-account read/write permission requirements, marker syntax, duplicate behavior, same-cell overwrite behavior, scan limits, and rollback steps.
+
+## 8. Sheet configuration deletion
+
+- [x] 8.1 Delete answer/source-dependent packages and the selected Sheet configuration atomically, returning the deleted package count.
+- [x] 8.2 Add destructive confirmation, result/error feedback, and client-state cleanup to the teacher interface.
+- [ ] 8.3 Add regression coverage and documentation, then run API/web builds and strict OpenSpec validation.
+
+## 9. Occupied answer-cell overwrite
+
+- [x] 9.1 Stop reading or rejecting existing answer-cell values during generated-question scan and confirmation while retaining write-permission and duplicate-binding validation.
+- [x] 9.2 Explain in the teacher preview that an accepted student answer overwrites existing destination values or formulas.
+- [x] 9.3 Update regression contracts and documentation, then run API/web builds and strict OpenSpec validation.
+
+## 10. Slash-separated group score statistics
+
+- [x] 10.1 Parse slash-separated answers and award each distinct group at most one point per cell while accumulating points across cells.
+- [x] 10.2 Present teacher statistics as points and add multi-group and same-group deduplication regression coverage.
+- [x] 10.3 Update documentation and run API/web builds plus strict OpenSpec validation.
+
+## 11. Teacher-finalized buzz answers
+
+- [x] 11.1 Persist valid buzz answers as pending without early winner selection, group counting, bonus scoring, or Google Sheets synchronization.
+- [x] 11.2 Add an idempotent teacher finalization operation that locks the round, skips groups at the daily global limit, selects the fastest eligible submitted attempt, and records all final outcomes.
+- [x] 11.3 Synchronize only the finalized winner to Google Sheets and publish review completion for student refresh.
+- [x] 11.4 Update teacher and student interfaces so submission shows received first and success/failure appears only after review.
+- [x] 11.5 Add regression coverage and documentation, then run API/web builds and strict OpenSpec validation.
+
+## 12. Reliable pending-submission feedback
+
+- [x] 12.1 Treat a duplicate request for an existing same-round pending answer as successful and preserve one submission row.
+- [x] 12.2 Scope student submission and review notices by question round so a prior result is not displayed after reopening.
+- [x] 12.3 Add regression coverage and run API/web builds plus strict OpenSpec validation.
+
+## 13. Pre-review submission feedback
+
+- [x] 13.1 Remove final buzz-failure wording from all pre-review rejection paths and reserve it for authoritative review results.
+- [x] 13.2 Add regression coverage and run web tests/build plus strict OpenSpec validation.
+
+## 14. Batch buzz completion and Sheet synchronization
+
+- [x] 14.1 Replace the classroom stop-all action with batch completion that stops and sequentially finalizes all active buzz questions.
+- [x] 14.2 Synchronize every finalized winner to its configured Sheet destination and retain per-submission retry actions.
+- [x] 14.3 Update documentation and regression coverage, then run web/API builds plus strict OpenSpec validation.
+
+## 15. Fastest two-group teacher answer display
+
+- [x] 15.1 Select the first submission from each of the two fastest distinct groups without changing persisted submissions.
+- [x] 15.2 Render only the selected submissions in each teacher question card.
+- [x] 15.3 Add regression coverage and documentation, then run the web build and strict OpenSpec validation.
+
+## 16. Reset-all response cleanup
+
+- [x] 16.1 Delete each buzz question's submissions and buzz records transactionally while resetting it, including residual records on `READY` questions.
+- [x] 16.2 Warn teachers that reset-all permanently deletes response records and clear cached teacher answer cards after confirmation.
+- [x] 16.3 Add regression coverage and documentation, then run API/web builds and strict OpenSpec validation.
+
+## 17. Group-only Sheet statistics display
+
+- [x] 17.1 Replace score summaries and per-group points with a distinct successful-group list while retaining the existing API contract.
+- [x] 17.2 Update teacher copy, styling, regression coverage, and documentation for group-only presentation.
+- [x] 17.3 Run web tests/build and strict OpenSpec validation.
+
+## 18. Challenged-group buzz eligibility restoration
+
+- [x] 18.1 Persist challenge edits and restore the challenged group's current-day global eligibility in one transaction.
+- [x] 18.2 Attribute finalized challenge success to the submitter's original group while preserving the challenged group for display and Sheet synchronization.
+- [x] 18.3 Add regression coverage and documentation, then run API/web builds and strict OpenSpec validation.

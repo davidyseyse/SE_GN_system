@@ -63,33 +63,64 @@ public final class QuestionLifecycleService {
   }
 
   public OperationResult reset(ClassroomEntity classroom, QuestionEntity question) {
+    return reset(classroom, question, false);
+  }
+
+  public OperationResult resetAndClearRecords(ClassroomEntity classroom, QuestionEntity question) {
+    return reset(classroom, question, true);
+  }
+
+  private OperationResult reset(
+      ClassroomEntity classroom,
+      QuestionEntity question,
+      boolean clearRecords
+  ) {
     int roundNumber = currentRound(question);
     QuestionState currentState = QuestionState.valueOf(question.state());
     if (currentState != QuestionState.BUZZ_OPEN
         && currentState != QuestionState.ANSWER_OPEN
-        && currentState != QuestionState.LOCKED) {
+        && currentState != QuestionState.LOCKED
+        && !(clearRecords && currentState == QuestionState.READY)) {
       return new OperationResult(question.id().toString(), currentState.name(), currentState.name(),
           "SKIPPED", roundNumber, "Question is not active or locked");
     }
 
-    redisBuzzSequenceService.delete("buzz:sequence:" + question.id() + ":" + roundNumber);
-    try (Connection connection = database.openConnection();
-         PreparedStatement statement = connection.prepareStatement("""
-             UPDATE questions
-             SET state = 'READY', updated_at = NOW()
-             WHERE id = ? AND classroom_id = ? AND state IN ('BUZZ_OPEN', 'ANSWER_OPEN', 'LOCKED')
-             """)) {
-      statement.setObject(1, question.id());
-      statement.setObject(2, classroom.id());
-      int updated = statement.executeUpdate();
-      if (updated == 0) {
-        return new OperationResult(question.id().toString(), currentState.name(), currentState.name(),
-            "UNCHANGED", roundNumber, "Question state changed concurrently");
+    int updated;
+    int deletedRecords = 0;
+    try (Connection connection = database.openConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        QuestionState lockedState = lockState(connection, classroom, question);
+        if (lockedState != QuestionState.BUZZ_OPEN
+            && lockedState != QuestionState.ANSWER_OPEN
+            && lockedState != QuestionState.LOCKED
+            && !(clearRecords && lockedState == QuestionState.READY)) {
+          connection.rollback();
+          return new OperationResult(question.id().toString(), currentState.name(), lockedState.name(),
+              "UNCHANGED", roundNumber, "Question state changed concurrently");
+        }
+
+        updated = updateResetState(connection, classroom, question);
+        if (clearRecords) {
+          deletedRecords = deleteAnswerRecords(connection, classroom, question);
+        }
+        connection.commit();
+      } catch (Exception exception) {
+        connection.rollback();
+        throw exception;
+      } finally {
+        connection.setAutoCommit(true);
       }
     } catch (SQLException exception) {
       throw new DatabaseException("Unable to reset question", exception);
     }
 
+    if (updated == 0 && deletedRecords == 0) {
+      return new OperationResult(question.id().toString(), currentState.name(), currentState.name(),
+          "SKIPPED", roundNumber, "Question is already ready and has no answer records");
+    }
+
+    redisBuzzSequenceService.delete("buzz:sequence:" + question.id() + ":" + roundNumber);
     eventBroker.publish(classroom.classroomCode(), "BUZZ_RESET", Map.of(
         "packageId", question.id().toString(),
         "questionId", question.id().toString(),
@@ -97,6 +128,39 @@ public final class QuestionLifecycleService {
     ));
     return new OperationResult(question.id().toString(), currentState.name(), QuestionState.READY.name(),
         "CHANGED", roundNumber, "");
+  }
+
+  private static int updateResetState(
+      Connection connection,
+      ClassroomEntity classroom,
+      QuestionEntity question
+  ) throws SQLException {
+    try (PreparedStatement statement = connection.prepareStatement("""
+        UPDATE questions
+        SET state = 'READY', updated_at = NOW()
+        WHERE id = ? AND classroom_id = ? AND state IN ('BUZZ_OPEN', 'ANSWER_OPEN', 'LOCKED')
+        """)) {
+      statement.setObject(1, question.id());
+      statement.setObject(2, classroom.id());
+      return statement.executeUpdate();
+    }
+  }
+
+  private static int deleteAnswerRecords(
+      Connection connection,
+      ClassroomEntity classroom,
+      QuestionEntity question
+  ) throws SQLException {
+    int deleted = 0;
+    for (String table : new String[]{"submissions", "buzz_records"}) {
+      try (PreparedStatement statement = connection.prepareStatement(
+          "DELETE FROM " + table + " WHERE classroom_id = ? AND question_id = ?")) {
+        statement.setObject(1, classroom.id());
+        statement.setObject(2, question.id());
+        deleted += statement.executeUpdate();
+      }
+    }
+    return deleted;
   }
 
   public int currentRound(QuestionEntity question) {

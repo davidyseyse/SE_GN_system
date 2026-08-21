@@ -12,6 +12,8 @@ Google Sheet 統計需要 `GOOGLE_APPLICATION_CREDENTIALS` 指向有效服務帳
 
 ## Pre-Deploy Checks
 
+Deleting a Sheet configuration transactionally removes every question package that uses it as a source or answer binding, including cascaded submissions, buzz records, and scores. Back up PostgreSQL before using this destructive operation.
+
 1. Run `npm.cmd run build --workspace @classroom/shared`
 2. Run `npm.cmd run build --workspace @classroom/web`
 3. Run `npm.cmd run build --workspace @classroom/api`
@@ -72,10 +74,10 @@ Google Sheet 統計需要 `GOOGLE_APPLICATION_CREDENTIALS` 指向有效服務帳
 
 The `DRAFT` migration is intentionally one-way for questions that have subsequently advanced. Restore a migrated row to `DRAFT` only when its identifier was captured before deployment and it is still `READY` with no post-migration round or interaction activity; otherwise retain its current lifecycle state.
 
-## Open Buzz and Success-Limit Migration
+## Open Buzz and First-Win-Priority Migration
 
 Apply `infra/postgres/init.sql` before deploying the new API. The idempotent migration keys `global_group_buzz_counts` by group number and Asia/Taipei calendar date, migrates existing counts using their last-update date, retains the legacy classroom-group table, backfills completed historical winners by group number and submission date, and creates a partial unique index enforcing one winner submission per question round.
 
-Every classroom uses the fixed system-wide daily group limit of `1`, including existing classrooms; participation settings cannot override it and the teacher UI hides the field. The active date changes automatically at Asia/Taipei midnight without a cleanup job. Buzz attempts no longer enforce legacy `answerTimeLimitSeconds` or `answer_deadline_at` values; they remain active until submission, explicit cancellation, or round reset/closure. During rollout, monitor `NOT_FASTEST`, `NO_ACTIVE_ATTEMPT`, `WINNER_ALREADY_SUBMITTED`, `SUCCESS_LIMIT_REACHED`, and `sheet_sync_status = 'RETRYABLE'` separately.
+Every classroom uses the system-wide current-day success count as a ranking input, not a hard limit. Finalization first considers submitted candidates whose group count is zero and uses receipt order within that tier; when no such candidate exists, it selects the fastest submitted candidate regardless of prior wins. Counts can exceed one, change date automatically at Asia/Taipei midnight, and can be explicitly reset without deleting history. Cross-question finalizations use a short date-scoped database serialization boundary so concurrent decisions observe committed counts. Buzz attempts remain active until submission, explicit cancellation, or round reset/closure. Submissions use `PENDING_REVIEW` until the teacher stops the question and calls `/api/submissions/finalize-buzz`; only the finalized winner is synchronized. During rollout, monitor `NO_ACTIVE_ATTEMPT`, `ALREADY_SUBMITTED`, `NO_ELIGIBLE_SUBMISSION`, `BUZZ_FAILED`, and `sheet_sync_status = 'RETRYABLE'` separately.
 
 For rollback, deploy the previous API and web artifacts while retaining the additive columns and indexes. Historical success counts and winner markers are audit data and must not be deleted. The former API may recreate Redis winner keys; clear only keys for precisely identified inactive rounds after rollback verification.

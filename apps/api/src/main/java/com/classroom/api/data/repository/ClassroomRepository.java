@@ -262,6 +262,20 @@ public final class ClassroomRepository {
     }
   }
 
+  public int globalGroupSuccessfulBuzzCount(Connection connection, int groupNumber) throws SQLException {
+    String sql = """
+        SELECT successful_buzz_count
+        FROM global_group_buzz_counts
+        WHERE group_number = ?
+          AND success_date = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date
+        """;
+    try (PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setInt(1, groupNumber);
+      ResultSet resultSet = statement.executeQuery();
+      return resultSet.next() ? resultSet.getInt(1) : 0;
+    }
+  }
+
   public int resetCurrentTaipeiDayGlobalGroupSuccessfulBuzzCounts() {
     String sql = """
         DELETE FROM global_group_buzz_counts
@@ -275,10 +289,9 @@ public final class ClassroomRepository {
     }
   }
 
-  public Integer incrementGlobalGroupSuccessfulBuzzCount(
+  public int incrementGlobalGroupSuccessfulBuzzCount(
       Connection connection,
-      int groupNumber,
-      int successfulBuzzLimit
+      int groupNumber
   ) throws SQLException {
     String sql = """
         INSERT INTO global_group_buzz_counts
@@ -287,15 +300,24 @@ public final class ClassroomRepository {
         ON CONFLICT (group_number, success_date) DO UPDATE
         SET successful_buzz_count = global_group_buzz_counts.successful_buzz_count + 1,
             updated_at = NOW()
-        WHERE global_group_buzz_counts.successful_buzz_count < ?
         RETURNING successful_buzz_count
         """;
     try (PreparedStatement statement = connection.prepareStatement(sql)) {
       statement.setInt(1, groupNumber);
-      statement.setInt(2, successfulBuzzLimit);
       ResultSet resultSet = statement.executeQuery();
-      return resultSet.next() ? resultSet.getInt(1) : null;
+      if (!resultSet.next()) throw new SQLException("Global group success count was not returned");
+      return resultSet.getInt(1);
     }
+  }
+
+  /** @deprecated The daily success count is no longer capped. */
+  @Deprecated
+  public Integer incrementGlobalGroupSuccessfulBuzzCount(
+      Connection connection,
+      int groupNumber,
+      int ignoredSuccessfulBuzzLimit
+  ) throws SQLException {
+    return incrementGlobalGroupSuccessfulBuzzCount(connection, groupNumber);
   }
 
   private static ClassroomEntity mapClassroom(ResultSet resultSet) throws SQLException {

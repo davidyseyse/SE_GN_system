@@ -8,7 +8,6 @@ import com.classroom.api.contract.Role;
 import com.classroom.api.data.model.ClassroomEntity;
 import com.classroom.api.data.model.QuestionEntity;
 import com.classroom.api.data.model.QuestionItemEntity;
-import com.classroom.api.data.model.ScoreRecordEntity;
 import com.classroom.api.data.model.SheetConfigEntity;
 import com.classroom.api.data.model.SubmissionEntity;
 import com.classroom.api.data.model.UserEntity;
@@ -16,7 +15,6 @@ import com.classroom.api.data.repository.BuzzRoundRepository;
 import com.classroom.api.data.repository.ClassroomRepository;
 import com.classroom.api.data.repository.QuestionItemRepository;
 import com.classroom.api.data.repository.QuestionRepository;
-import com.classroom.api.data.repository.ScoreRepository;
 import com.classroom.api.data.repository.SheetConfigRepository;
 import com.classroom.api.data.repository.SubmissionRepository;
 import com.classroom.api.data.repository.UserRepository;
@@ -25,7 +23,6 @@ import com.classroom.api.http.HttpHandlerFunction;
 import com.classroom.api.http.HttpResponses;
 import com.classroom.api.question.QuestionPackageService;
 import com.classroom.api.realtime.RealtimeEventBroker;
-import com.classroom.api.score.ClassroomScoringPolicy;
 import com.classroom.api.sheets.GoogleSheetsSyncService;
 import com.classroom.api.sheets.SheetAnswerFormatter;
 import com.classroom.api.util.JsonParser;
@@ -45,7 +42,6 @@ public final class PackageSubmissionController {
   private final QuestionItemRepository itemRepository;
   private final SubmissionRepository submissionRepository;
   private final UserRepository userRepository;
-  private final ScoreRepository scoreRepository;
   private final BuzzRoundRepository roundRepository;
   private final SheetConfigRepository sheetConfigRepository;
   private final QuestionPackageService packageService;
@@ -60,7 +56,6 @@ public final class PackageSubmissionController {
       QuestionItemRepository itemRepository,
       SubmissionRepository submissionRepository,
       UserRepository userRepository,
-      ScoreRepository scoreRepository,
       BuzzRoundRepository roundRepository,
       SheetConfigRepository sheetConfigRepository,
       QuestionPackageService packageService,
@@ -74,7 +69,6 @@ public final class PackageSubmissionController {
     this.itemRepository = itemRepository;
     this.submissionRepository = submissionRepository;
     this.userRepository = userRepository;
-    this.scoreRepository = scoreRepository;
     this.roundRepository = roundRepository;
     this.sheetConfigRepository = sheetConfigRepository;
     this.packageService = packageService;
@@ -117,23 +111,17 @@ public final class PackageSubmissionController {
       String answerJson = toJson(answers);
       SubmissionEntity submission = new SubmissionEntity(
           UUID.randomUUID(), classroom.id(), packageId, user.id(), 1, answerJson,
-          "RECEIVED", null, null, "PENDING", Instant.now(), null,
-          SheetAnswerFormatter.extractGroupNumber(user.displayName()), false, false, winnerSubmission);
-      ClassroomScoringPolicy scoringPolicy = ClassroomScoringPolicy.fromSettings(
-          classroom.participationSettings());
+          "RECEIVED", null, null, "PENDING_REVIEW", Instant.now(), null,
+          SheetAnswerFormatter.extractGroupNumber(user.displayName()), false, false, false);
       BuzzAttemptService.SubmissionResult buzzResult = null;
       if (winnerSubmission) {
-        buzzResult = buzzAttemptService.saveFastestSubmission(
-            submission, round, scoringPolicy.successfulBuzzLimit());
+        buzzResult = buzzAttemptService.savePendingSubmission(submission, round);
         if (!buzzResult.accepted()) {
           HttpResponses.json(exchange, 200, Map.of(
               "accepted", false,
               "outcomeStatus", buzzResult.outcomeStatus(),
               "groupNumber", submission.groupNumber() == null ? 0 : submission.groupNumber(),
-              "groupSuccessfulBuzzCount", submission.groupNumber() == null
-                  ? 0 : classroomRepository.globalGroupSuccessfulBuzzCount(submission.groupNumber()),
-              "successfulBuzzLimit", scoringPolicy.successfulBuzzLimit(),
-              "syncStatus", "NOT_REQUIRED"
+              "syncStatus", "PENDING_REVIEW"
           ));
           return;
         }
@@ -141,9 +129,9 @@ public final class PackageSubmissionController {
         submissionRepository.save(submission, round);
       }
 
-      String syncStatus = "NOT_REQUIRED";
+      String syncStatus = winnerSubmission ? "PENDING_REVIEW" : "NOT_REQUIRED";
       UUID configId = packageService.findSheetConfigId(packageId);
-      if (configId != null) {
+      if (!winnerSubmission && configId != null) {
         SheetConfigEntity config = sheetConfigRepository.findById(configId);
         if (config != null) {
           Map<String, String> values = new LinkedHashMap<>();
@@ -167,13 +155,6 @@ public final class PackageSubmissionController {
         }
       }
 
-      if (winnerSubmission && scoringPolicy.buzzBonus() != 0) {
-        int runningTotal = scoreRepository.currentTotal(classroom.id(), user.id()) + scoringPolicy.buzzBonus();
-        scoreRepository.save(new ScoreRecordEntity(
-            UUID.randomUUID(), classroom.id(), user.id(), packageId, "BUZZ_BONUS",
-            scoringPolicy.buzzBonus(), runningTotal, Instant.now()));
-      }
-
       eventBroker.publish(classroom.classroomCode(), "SUBMISSION_CREATED", Map.of(
           "submissionId", submission.id().toString(),
           "packageId", packageId.toString(),
@@ -187,13 +168,11 @@ public final class PackageSubmissionController {
       ));
       HttpResponses.json(exchange, 200, Map.of(
           "accepted", true,
-          "outcomeStatus", "ACCEPTED",
+          "outcomeStatus", winnerSubmission ? "PENDING_REVIEW" : "ACCEPTED",
           "submissionId", submission.id().toString(),
           "syncStatus", syncStatus,
           "groupNumber", submission.groupNumber() == null ? 0 : submission.groupNumber(),
-          "groupSuccessfulBuzzCount", buzzResult == null || submission.groupNumber() == null
-              ? 0 : buzzResult.groupSuccessfulBuzzCount(),
-          "successfulBuzzLimit", scoringPolicy.successfulBuzzLimit()
+          "groupSuccessfulBuzzCount", 0
       ));
     };
   }

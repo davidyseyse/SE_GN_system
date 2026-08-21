@@ -337,8 +337,8 @@ try {
       @{ itemId = [string]$packageItems[1].id; answer = "Not winner two" }
     )
   }
-  Assert-True ($nonWinnerPackageAnswer.StatusCode -eq 200 -and -not $nonWinnerPackageAnswer.Body.accepted) "Slower package submission should be skipped"
-  Assert-True ([string]$nonWinnerPackageAnswer.Body.outcomeStatus -eq "NOT_FASTEST") "Slower package submission used the wrong outcome"
+  Assert-True ($nonWinnerPackageAnswer.StatusCode -eq 200 -and $nonWinnerPackageAnswer.Body.accepted) "Slower package submission was not saved for review"
+  Assert-True ([string]$nonWinnerPackageAnswer.Body.outcomeStatus -eq "PENDING_REVIEW") "Submission revealed the result before review"
 
   $missingPackageAnswer = Invoke-ApiJson -Method "POST" -Path "/api/question-packages/answers" -Token $studentOneToken -Body @{
     classroomCode = $classroomCode
@@ -356,7 +356,18 @@ try {
     )
   }
   Assert-True ($packageSubmission.StatusCode -eq 200) "Complete package submission failed"
-  Assert-True (@("SYNCED", "RETRYABLE", "NOT_REQUIRED") -contains [string]$packageSubmission.Body.syncStatus) "Package sync status was not reported"
+  Assert-True ([string]$packageSubmission.Body.syncStatus -eq "PENDING_REVIEW") "Package answer synchronized before review"
+
+  $packageLock = Invoke-ApiJson -Method "POST" -Path "/api/questions/state" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode; questionId = $packageId; targetState = "LOCKED"
+  }
+  Assert-True ($packageLock.StatusCode -eq 200) "Package could not be stopped before review"
+  $packageFinalize = Invoke-ApiJson -Method "POST" -Path "/api/submissions/finalize-buzz" -Token $teacherToken -Body @{
+    classroomCode = $classroomCode; questionId = $packageId
+  }
+  Assert-True ($packageFinalize.StatusCode -eq 200) "Package review finalization failed"
+  Assert-True ([string]$packageFinalize.Body.winnerSubmissionId -eq [string]$packageSubmission.Body.submissionId) "Fastest submitted package did not win at review"
+  Assert-True (@("SYNCED", "RETRYABLE", "NOT_REQUIRED") -contains [string]$packageFinalize.Body.syncStatus) "Finalized package sync status was not reported"
 
   $packageReset = Invoke-ApiJson -Method "POST" -Path "/api/buzz/reset" -Token $teacherToken -Body @{
     classroomCode = $classroomCode
@@ -637,7 +648,7 @@ try {
   $teacherQuestions = Invoke-ApiJson -Method "GET" -Path "/api/questions?classroomCode=$classroomCode" -Token $teacherToken -Body $null
   $roundQuestionView = @($teacherQuestions.Body.questions | Where-Object { [string]$_.id -eq $roundQuestionId })[0]
   Assert-True ([string]$roundQuestionView.buzzStatus -eq "SUBMITTED_PENDING_REVIEW") "Teacher current-round status did not recover submitted state"
-  Assert-True (-not [string]::IsNullOrWhiteSpace([string]$roundQuestionView.winnerDisplayName)) "Teacher current-round status omitted winner display name"
+  Assert-True ([string]::IsNullOrWhiteSpace([string]$roundQuestionView.winnerDisplayName)) "Pending submission exposed a winner before review"
 
   $noDeadlineQuestion = Invoke-ApiJson -Method "POST" -Path "/api/questions" -Token $teacherToken -Body @{
     classroomCode = $classroomCode
@@ -730,11 +741,20 @@ try {
   }
   Assert-True ($buzzAfterStop.StatusCode -eq 400) "Stopped question still accepted buzz requests"
 
+  $answersBeforeReset = Invoke-ApiJson -Method "GET" -Path "/api/submissions?classroomCode=$classroomCode&questionId=$roundQuestionId" -Token $teacherToken -Body $null
+  $buzzHistoryBeforeReset = Invoke-ApiJson -Method "GET" -Path "/api/buzz/history?classroomCode=$classroomCode&questionId=$roundQuestionId" -Token $teacherToken -Body $null
+  Assert-True (@($answersBeforeReset.Body.answers).Count -ge 1) "RESET_ALL fixture did not contain an answer record"
+  Assert-True (@($buzzHistoryBeforeReset.Body.history).Count -ge 1) "RESET_ALL fixture did not contain a buzz record"
+
   $resetAll = Invoke-ApiJson -Method "POST" -Path "/api/questions/batch" -Token $teacherToken -Body @{
     classroomCode = $classroomCode
     action = "RESET_ALL"
   }
   Assert-True ($resetAll.StatusCode -eq 200) "RESET_ALL failed"
+  $answersAfterReset = Invoke-ApiJson -Method "GET" -Path "/api/submissions?classroomCode=$classroomCode&questionId=$roundQuestionId" -Token $teacherToken -Body $null
+  $buzzHistoryAfterReset = Invoke-ApiJson -Method "GET" -Path "/api/buzz/history?classroomCode=$classroomCode&questionId=$roundQuestionId" -Token $teacherToken -Body $null
+  Assert-True (@($answersAfterReset.Body.answers).Count -eq 0) "RESET_ALL did not delete answer records"
+  Assert-True (@($buzzHistoryAfterReset.Body.history).Count -eq 0) "RESET_ALL did not delete buzz records"
   $openAll = Invoke-ApiJson -Method "POST" -Path "/api/questions/batch" -Token $teacherToken -Body @{
     classroomCode = $classroomCode
     action = "OPEN_ALL"
@@ -755,6 +775,16 @@ try {
   Assert-True ($auditCount -ge 1) "Audit log was not recorded for export"
   $draftCount = Query-QuestionCountByState -RepoRoot $repoRoot -State "DRAFT"
   Assert-True ($draftCount -eq 0) "Legacy DRAFT migration or READY creation left unexpected DRAFT questions"
+
+  $deleteSheetConfigResponse = Invoke-ApiJson -Method "POST" -Path "/api/sheet-configs/delete" -Token $teacherToken -Body @{
+    configId = $sheetConfigId
+  }
+  Assert-True ($deleteSheetConfigResponse.StatusCode -eq 200) "Referenced Sheet configuration could not be deleted"
+  Assert-True ([int]$deleteSheetConfigResponse.Body.deletedPackageCount -ge 1) "Sheet configuration deletion did not report dependent packages"
+  $sheetConfigsAfterDelete = Invoke-ApiJson -Method "GET" -Path "/api/sheet-configs" -Token $teacherToken -Body $null
+  Assert-True (@($sheetConfigsAfterDelete.Body.configs | Where-Object { [string]$_.id -eq $sheetConfigId }).Count -eq 0) "Deleted Sheet configuration remained listed"
+  $packagesAfterSheetDelete = Invoke-ApiJson -Method "GET" -Path "/api/question-packages?classroomCode=$classroomCode" -Token $teacherToken -Body $null
+  Assert-True (@($packagesAfterSheetDelete.Body.packages | Where-Object { [string]$_.id -eq $packageId }).Count -eq 0) "Package depending on deleted Sheet configuration remained listed"
 
   Write-Output "Validation suite passed."
 }

@@ -76,15 +76,46 @@ public final class SheetConfigRepository {
     }
   }
 
-  public void delete(UUID id) {
-    String sql = "DELETE FROM sheet_configs WHERE id = ?";
-    try (Connection connection = database.openConnection();
-         PreparedStatement statement = connection.prepareStatement(sql)) {
-      statement.setObject(1, id);
-      statement.executeUpdate();
+  public DeletionResult delete(UUID id) {
+    String deleteQuestionsSql = """
+        DELETE FROM questions
+        WHERE sheet_config_id = ?
+           OR id IN (
+             SELECT DISTINCT qi.question_id
+             FROM question_items qi
+             JOIN question_item_sheet_bindings binding ON binding.item_id = qi.id
+             WHERE binding.source_sheet_config_id = ?
+                OR binding.answer_sheet_config_id = ?
+           )
+        """;
+    String deleteConfigSql = "DELETE FROM sheet_configs WHERE id = ?";
+    try (Connection connection = database.openConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        int deletedPackageCount;
+        try (PreparedStatement statement = connection.prepareStatement(deleteQuestionsSql)) {
+          statement.setObject(1, id);
+          statement.setObject(2, id);
+          statement.setObject(3, id);
+          deletedPackageCount = statement.executeUpdate();
+        }
+        int deletedConfigCount;
+        try (PreparedStatement statement = connection.prepareStatement(deleteConfigSql)) {
+          statement.setObject(1, id);
+          deletedConfigCount = statement.executeUpdate();
+        }
+        connection.commit();
+        return new DeletionResult(deletedConfigCount == 1, deletedPackageCount);
+      } catch (SQLException exception) {
+        connection.rollback();
+        throw exception;
+      }
     } catch (SQLException exception) {
-      throw new DatabaseException("Unable to delete sheet config", exception);
+      throw new DatabaseException("Unable to delete sheet config and dependent packages", exception);
     }
+  }
+
+  public record DeletionResult(boolean configDeleted, int deletedPackageCount) {
   }
 
   private static SheetConfigEntity map(ResultSet resultSet) throws SQLException {

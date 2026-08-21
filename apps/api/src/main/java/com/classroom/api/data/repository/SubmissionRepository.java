@@ -61,11 +61,14 @@ public final class SubmissionRepository {
     }
   }
 
-  public boolean saveBuzzWinner(Connection connection, SubmissionEntity submission, int roundNumber)
-      throws SQLException {
+  public boolean savePendingBuzzSubmission(
+      Connection connection,
+      SubmissionEntity submission,
+      int roundNumber
+  ) throws SQLException {
     String sql = """
-        INSERT INTO submissions (id, classroom_id, question_id, user_id, attempt_number, submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, round_number, group_number, entered_by_teacher, group_challenged, buzz_winner)
-        VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
+        INSERT INTO submissions (id, classroom_id, question_id, user_id, attempt_number, submitted_answer, submission_status, is_correct, awarded_score, review_status, submitted_at, reviewed_at, round_number, group_number, entered_by_teacher, group_challenged, buzz_winner, sheet_sync_status)
+        VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, 'PENDING_REVIEW')
         ON CONFLICT DO NOTHING
         """;
     try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -210,21 +213,46 @@ public final class SubmissionRepository {
     }
   }
 
-  public void updateAnswer(SubmissionEntity submission) {
+  public void updateChallengedAnswer(SubmissionEntity submission, boolean restoreChallengedGroup) {
     String sql = """
         UPDATE submissions
         SET submitted_answer = CAST(? AS jsonb), group_number = ?, group_challenged = ?
         WHERE id = ?
         """;
-    try (Connection connection = database.openConnection();
-         PreparedStatement statement = connection.prepareStatement(sql)) {
-      statement.setString(1, JsonValue.normalize(submission.submittedAnswer()));
-      statement.setObject(2, submission.groupNumber());
-      statement.setBoolean(3, submission.groupChallenged());
-      statement.setObject(4, submission.id());
-      statement.executeUpdate();
+    try (Connection connection = database.openConnection()) {
+      connection.setAutoCommit(false);
+      try (PreparedStatement statement = connection.prepareStatement(sql)) {
+        statement.setString(1, JsonValue.normalize(submission.submittedAnswer()));
+        statement.setObject(2, submission.groupNumber());
+        statement.setBoolean(3, submission.groupChallenged());
+        statement.setObject(4, submission.id());
+        if (statement.executeUpdate() != 1) {
+          throw new SQLException("Submission changed before challenge update");
+        }
+        if (restoreChallengedGroup) {
+          restoreCurrentDayGroupEligibility(connection, submission.groupNumber());
+        }
+        connection.commit();
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      } finally {
+        connection.setAutoCommit(true);
+      }
     } catch (SQLException exception) {
-      throw new DatabaseException("Unable to update submission answer", exception);
+      throw new DatabaseException("Unable to update challenged submission answer", exception);
+    }
+  }
+
+  private static void restoreCurrentDayGroupEligibility(Connection connection, Integer groupNumber)
+      throws SQLException {
+    try (PreparedStatement statement = connection.prepareStatement("""
+        DELETE FROM global_group_buzz_counts
+        WHERE group_number = ?
+          AND success_date = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date
+        """)) {
+      statement.setObject(1, groupNumber);
+      statement.executeUpdate();
     }
   }
 

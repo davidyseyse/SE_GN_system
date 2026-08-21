@@ -47,10 +47,11 @@ public final class SmokeTest {
     }
     SheetGroupStatistics.Result statistics = SheetGroupStatistics.fromSpreadsheetPayload(
         JsonParser.parse("{\"sheets\":[{\"data\":[{\"rowData\":[{\"values\":["
-            + "{\"formattedValue\":\"A_G2\"},{\"formattedValue\":\"B_G5\"},"
-            + "{\"formattedValue\":\"C_G2\"},{\"formattedValue\":\"ignore_G0\"}]}]}]}]}"));
-    if (statistics.successfulGroupCount() != 2 || statistics.totalSuccessfulAnswers() != 3
-        || statistics.groups().get(0).groupNumber() != 2
+            + "{\"formattedValue\":\"fdsfs_G1/ asda_G2\"},"
+            + "{\"formattedValue\":\"again_G1 / duplicate_G1\"},"
+            + "{\"formattedValue\":\"answer_G2\"},{\"formattedValue\":\"ignore_G0\"}]}]}]}]}"));
+    if (statistics.successfulGroupCount() != 2 || statistics.totalSuccessfulAnswers() != 4
+        || statistics.groups().get(0).groupNumber() != 1
         || statistics.groups().get(0).successfulAnswerCount() != 2) {
       throw new IllegalStateException("Google Sheets group statistics parsing failed");
     }

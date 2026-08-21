@@ -181,12 +181,9 @@ public final class ClassroomController {
       }
 
       List<ClassroomMemberEntity> members = classroomRepository.listMembers(classroom.id());
-      int successfulBuzzLimit = ClassroomScoringPolicy.fromSettings(
-          classroom.participationSettings()).successfulBuzzLimit();
       HttpResponses.json(exchange, 200, Map.of(
           "classroomId", classroom.id().toString(),
           "classroomCode", classroom.classroomCode(),
-          "successfulBuzzLimit", successfulBuzzLimit,
           "members", members.stream().map(member -> {
             UserEntity user = userRepository.findById(member.userId());
             String displayName = user == null ? "" : user.displayName();

@@ -57,15 +57,16 @@ The system SHALL show detected packages before creation and SHALL let the teache
 - **THEN** the system creates the remaining selected packages and does not create the excluded package
 
 ### Requirement: Scan and confirmation validate both spreadsheets
-The system MUST verify source readability, destination writability, worksheet existence, marker consistency, destination occupancy, and existing bindings before creation.
+The system MUST verify source readability, destination writability, worksheet existence, marker consistency, and existing bindings before creation. Existing destination values or formulas MUST NOT block creation.
 
-#### Scenario: Destination contains ordinary data
+#### Scenario: Destination contains an existing value or formula
 - **WHEN** the mapped answer cell is nonblank and is not the same physical marker cell being imported
-- **THEN** the preview identifies the conflict and confirmation does not overwrite the data
+- **THEN** the preview permits the binding and confirmation creates the package
+- **AND** the existing content remains unchanged until an accepted student answer overwrites the cell
 
 #### Scenario: Same physical marker cell is the destination
 - **WHEN** source and answer resolve to the same cell containing the detected marker
-- **THEN** the marker does not count as conflicting destination data
+- **THEN** the system permits the binding and the accepted student answer may overwrite the marker
 
 #### Scenario: Marker is duplicated
 - **WHEN** the same normalized marker appears more than once in a scan

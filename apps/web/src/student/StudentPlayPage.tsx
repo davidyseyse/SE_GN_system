@@ -29,13 +29,12 @@ type RealtimeEventView = {
   };
 };
 
-function submissionOutcomeMessage(outcomeStatus: string): string {
+function pendingSubmissionMessage(outcomeStatus: string): string {
   switch (outcomeStatus) {
-    case "NOT_FASTEST":
-    case "SUCCESS_LIMIT_REACHED":
-    case "WINNER_ALREADY_SUBMITTED":
+    case "ROUND_ALREADY_FINALIZED":
+      return "本輪已完成檢討，正在更新結果。";
     default:
-      return "本次未搶答成功，答案未寫入系統。";
+      return "答案尚未成功送出，請再試一次。";
   }
 }
 
@@ -49,7 +48,7 @@ export function StudentPlayPage() {
   const [submittingQuestionIds, setSubmittingQuestionIds] = useState<string[]>([]);
   const submittingKeysRef = useRef(new Set<string>());
   const answerRefreshGateRef = useRef(createLatestRequestGate());
-  const [noticeByQuestionId, setNoticeByQuestionId] = useState<Record<string, string>>({});
+  const [noticeByInteractionKey, setNoticeByInteractionKey] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState("請等待教師開放搶答。");
   const realtime = useRealtimeFeed(session?.token ?? null, session?.classroomCode ?? null);
   const currentRoundByQuestionId = useMemo(() => Object.fromEntries(
@@ -119,6 +118,7 @@ export function StudentPlayPage() {
       setAnswersByQuestionId((current) => removeInteractionEntry(current, interactionKey));
       if (latestEvent.type === "BUZZ_RESET") {
         setSubmittedQuestionIds((current) => removeQuestionRoundKeys(current, questionId));
+        setNoticeByInteractionKey((current) => removeInteractionEntry(current, interactionKey));
       }
     }
   }, [realtime.events, currentRoundByQuestionId, session?.userId]);
@@ -163,6 +163,21 @@ export function StudentPlayPage() {
           return [questionId, loadedAnswersByQuestionId[questionId] ?? current[questionId] ?? []];
         })
       ));
+      setNoticeByInteractionKey((current) => {
+        const next = { ...current };
+        for (const question of loadedQuestions) {
+          const questionId = String(question.id);
+          const interactionKey = buzzInteractionKey(questionId, String(question.roundId ?? "0"));
+          const ownSubmission = (loadedAnswersByQuestionId[questionId] ?? [])
+            .find((submission) => submission.isOwnSubmission);
+          if (ownSubmission?.reviewStatus === "BUZZ_SUCCESS") {
+            next[interactionKey] = "✓ 搶答成功。";
+          } else if (ownSubmission?.reviewStatus === "BUZZ_FAILED") {
+            next[interactionKey] = "搶答失敗，本次答案未寫入。";
+          }
+        }
+        return next;
+      });
       const ownSubmittedKeys = ownSubmittedInteractionKeys(loadedQuestions, loadedAnswersByQuestionId);
       setSubmittedQuestionIds((current) => mergeSubmittedInteractionKeys(current, ownSubmittedKeys));
     } catch (error) {
@@ -205,9 +220,9 @@ export function StudentPlayPage() {
         }))
       );
       if (!result.accepted) {
-        setNoticeByQuestionId((current) => ({
+        setNoticeByInteractionKey((current) => ({
           ...current,
-          [questionId]: submissionOutcomeMessage(result.outcomeStatus)
+          [interactionKey]: pendingSubmissionMessage(result.outcomeStatus)
         }));
         return;
       }
@@ -218,14 +233,14 @@ export function StudentPlayPage() {
         delete next[interactionKey];
         return next;
       });
-      setNoticeByQuestionId((current) => ({
+      setNoticeByInteractionKey((current) => ({
         ...current,
-        [questionId]: "✓ 已作答"
+        [interactionKey]: "✓ 已作答"
       }));
     } catch (error) {
-      setNoticeByQuestionId((current) => ({
+      setNoticeByInteractionKey((current) => ({
         ...current,
-        [questionId]: error instanceof Error ? error.message : "答案送出失敗。"
+        [interactionKey]: "答案尚未成功送出，請再試一次。"
       }));
     } finally {
       submittingKeysRef.current.delete(interactionKey);
@@ -240,9 +255,9 @@ export function StudentPlayPage() {
     try {
       const buzzResult = await submitBuzz(activeSession.token, activeSession.classroomCode!, questionId);
       if (!buzzResult.accepted) {
-        setNoticeByQuestionId((current) => ({
+        setNoticeByInteractionKey((current) => ({
           ...current,
-          [questionId]: submissionOutcomeMessage(buzzResult.outcomeStatus)
+          [interactionKey]: pendingSubmissionMessage(buzzResult.outcomeStatus)
         }));
         return;
       }
@@ -260,9 +275,9 @@ export function StudentPlayPage() {
       if (!submissionResult.accepted) {
         await cancelBuzz(activeSession.token, activeSession.classroomCode!, questionId).catch(() => undefined);
         setLocallyBuzzedQuestionIds((current) => removeInteractionEntry(current, interactionKey));
-        setNoticeByQuestionId((current) => ({
+        setNoticeByInteractionKey((current) => ({
           ...current,
-          [questionId]: submissionOutcomeMessage(submissionResult.outcomeStatus)
+          [interactionKey]: pendingSubmissionMessage(submissionResult.outcomeStatus)
         }));
         return;
       }
@@ -270,16 +285,16 @@ export function StudentPlayPage() {
       await refreshStudentView();
       setSubmittedQuestionIds((current) => mergeSubmittedInteractionKeys(current, [interactionKey]));
       setLocallyBuzzedQuestionIds((current) => removeInteractionEntry(current, interactionKey));
-      setNoticeByQuestionId((current) => ({
+      setNoticeByInteractionKey((current) => ({
         ...current,
-        [questionId]: "✓ 搶答成功，答案已送出。"
+        [interactionKey]: "✓ 答案送出成功，等待老師完成搶答並檢討。"
       }));
     } catch (error) {
       await cancelBuzz(activeSession.token, activeSession.classroomCode!, questionId).catch(() => undefined);
       setLocallyBuzzedQuestionIds((current) => removeInteractionEntry(current, interactionKey));
-      setNoticeByQuestionId((current) => ({
+      setNoticeByInteractionKey((current) => ({
         ...current,
-        [questionId]: error instanceof Error ? error.message : "搶答失敗。"
+        [interactionKey]: "答案尚未成功送出，請再試一次。"
       }));
     } finally {
       submittingKeysRef.current.delete(interactionKey);
@@ -295,14 +310,14 @@ export function StudentPlayPage() {
         delete next[interactionKey];
         return next;
       });
-      setNoticeByQuestionId((current) => ({
+      setNoticeByInteractionKey((current) => ({
         ...current,
-        [questionId]: "已取消你本次的搶答，其他同學的搶答不受影響。"
+        [interactionKey]: "已取消你本次的搶答，其他同學的搶答不受影響。"
       }));
     } catch (error) {
-      setNoticeByQuestionId((current) => ({
+      setNoticeByInteractionKey((current) => ({
         ...current,
-        [questionId]: error instanceof Error ? error.message : "取消搶答失敗。"
+        [interactionKey]: error instanceof Error ? error.message : "取消搶答失敗。"
       }));
     }
   }
@@ -350,7 +365,7 @@ export function StudentPlayPage() {
                     {formatQuestionState(state)}
                   </span>
                   {winnerUserId ? <p className="muted">目前搶答成功者：{winnerUserId}</p> : null}
-                  {noticeByQuestionId[questionId] ? <p className="notice">{noticeByQuestionId[questionId]}</p> : null}
+                  {noticeByInteractionKey[interactionKey] ? <p className="notice">{noticeByInteractionKey[interactionKey]}</p> : null}
                   {state === "BUZZ_OPEN" ? (
                     <>
                       {items.map((item) => (
