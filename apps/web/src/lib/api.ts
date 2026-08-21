@@ -254,7 +254,6 @@ export async function joinClassroom(token: string, classroomCode: string) {
 
 export async function getMembers(token: string, classroomCode: string) {
   return request<{
-    successfulBuzzLimit: number;
     members: Array<ClassroomParticipantContract & {
       presenceStatus: string;
       joinedAt: string;
@@ -351,7 +350,6 @@ export async function submitPackageAnswers(
     syncStatus: string;
     groupNumber: number;
     groupSuccessfulBuzzCount: number;
-    successfulBuzzLimit: number;
   }>(
     "/api/question-packages/answers",
     {
@@ -378,7 +376,6 @@ export async function finalizeBuzzReview(token: string, classroomCode: string, q
     winnerUserId: string;
     winnerGroupNumber: number;
     groupSuccessfulBuzzCount?: number;
-    successfulBuzzLimit?: number;
     syncStatus: string;
     syncError: string;
   }>("/api/submissions/finalize-buzz", {
@@ -459,7 +456,6 @@ export async function submitBuzz(token: string, classroomCode: string, questionI
     receiptOrder: number;
     groupNumber: number;
     groupSuccessfulBuzzCount?: number;
-    successfulBuzzLimit?: number;
   }>(
     "/api/buzz",
     {

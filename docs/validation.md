@@ -111,15 +111,15 @@ Before joining, confirm the teacher dashboard classroom selector starts blank, l
 7. Reset and reopen the package. Confirm the old winner/drafts clear only for that package and the next round accepts a new winner and submission.
 8. Confirm the student page contains no realtime event-history panel while package state and winner changes continue updating without reload.
 
-## Successful Buzz Limit Verification
+## First-Win Priority Verification
 
-1. Create two classrooms; confirm the teacher UI has no success-limit field, then join students A and B with group 1 in different classrooms and student C with group 2.
-2. Let student A submit the fastest answer; confirm every group-1 member row reports group usage `1 / 1`.
-3. Open a question in the other classroom and submit as student B; confirm it is accepted as `PENDING_REVIEW` with no score or Sheets request. Complete teacher review and confirm the internal attempt becomes `SUCCESS_LIMIT_REACHED`, no success score or Sheets write is created, and the student UI only reports failure without mentioning the group count or limit.
-4. Buzz and submit as student C, complete teacher review, and confirm group 2 succeeds independently and reports `1 / 1`.
-5. Run concurrent submissions from the same group number in different classrooms; confirm at most one transaction increments the global group counter and every skipped request produces no Sheets write.
-6. Insert or retain a group count dated before the current Asia/Taipei date; confirm the teacher view reports `0 / 1` for today and the group can win once again.
-7. Give group 2 a current-day success, edit a group-1 student's answer to `挑戰：第2組`, and confirm group 2 immediately reports `0 / 1` and can win again. If the challenge is edited before finalization, confirm the winner remains attributed to group 2 for display/Sheet output while the consumed global slot belongs to group 1.
+1. Create two classrooms; confirm the teacher UI has no success-limit field, then join students from groups 1, 2, and 3.
+2. Submit in order 1, 2, 3 for three consecutively finalized questions; confirm the winners are groups 1, 2, and 3 and the member rows display `1 次`.
+3. Submit in order 1, 2, 3 for a fourth question; confirm group 1 wins through fastest fallback, its count displays `2 次`, and the winning answer is written to Sheets.
+4. Repeat through six questions and confirm winners `1, 2, 3, 1, 1, 1`, final counts `4, 1, 1`, and six winner answers written to Sheets.
+5. Finalize two questions concurrently with identical candidates; confirm serialized decisions grant the two initial first wins to different groups.
+6. Insert or retain a group count dated before the current Asia/Taipei date; confirm the teacher view reports `0 次` for today and the group receives first-win priority again.
+7. Reset today's success counts and confirm historical submissions and Sheets values remain while all groups regain first-win priority.
 
 ## Deployment and Rollback for Question Packages
 

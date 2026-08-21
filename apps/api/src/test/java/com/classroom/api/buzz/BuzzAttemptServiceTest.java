@@ -8,12 +8,13 @@ import com.classroom.api.data.repository.BuzzRepository;
 import com.classroom.api.data.repository.ClassroomRepository;
 import com.classroom.api.data.repository.SubmissionRepository;
 import com.classroom.api.realtime.RealtimeEventBroker;
-import com.classroom.api.score.ClassroomScoringPolicy;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -30,16 +31,19 @@ public final class BuzzAttemptServiceTest {
     BuzzAttemptServiceTest test = new BuzzAttemptServiceTest();
     test.pendingSubmissionRetryIsIdempotent();
     test.submissionsStayPendingUntilFastestEligibleIsFinalized();
-    test.successLimitSkipsEarlierGroupDuringFinalization();
+    test.firstWinPrioritySkipsEarlierPreviouslySuccessfulGroup();
+    test.fastestFallbackAllowsAnotherSuccess();
+    test.solePreviouslySuccessfulCandidateCanWin();
+    test.resetRestoresFirstWinPriority();
     test.challengedGroupRegainsEligibility();
     test.previousTaipeiDaySuccessDoesNotBlockToday();
     test.legacyDeadlineDoesNotExpireAnAttempt();
     test.explicitCancellationAdvancesEligibility();
     test.concurrentWinnerCommitCountsExactlyOnce();
-    test.globalGroupFinalSlotIsAtomicAcrossClassrooms();
-    test.sameGroupAcrossClassroomsAllowsOnlyOneWinner();
-    test.classroomSettingCannotOverrideFixedGlobalLimit();
-    System.out.println("Open buzz ranking, no-deadline, and success-limit tests passed.");
+    test.concurrentQuestionsObserveFirstWinPriority();
+    test.sixQuestionsAllocateFirstWinsThenFastest();
+    test.noSubmissionProducesNoWinner();
+    System.out.println("Open buzz ranking, no-deadline, and first-win-priority tests passed.");
   }
 
   private void pendingSubmissionRetryIsIdempotent() throws Exception {
@@ -86,7 +90,7 @@ public final class BuzzAttemptServiceTest {
     }
   }
 
-  private void successLimitSkipsEarlierGroupDuringFinalization() throws Exception {
+  private void firstWinPrioritySkipsEarlierPreviouslySuccessfulGroup() throws Exception {
     try (Fixture fixture = createFixture()) {
       BuzzAttemptService service = service();
       execute("INSERT INTO global_group_buzz_counts (group_number, successful_buzz_count) VALUES (?, 1)",
@@ -94,7 +98,7 @@ public final class BuzzAttemptServiceTest {
       fixture.saveAttempt(fixture.studentOneId, 1, null);
       fixture.saveAttempt(fixture.studentTwoId, 2, null);
       assertTrue(service.savePendingSubmission(fixture.submission(fixture.studentOneId), 1).accepted(),
-          "Over-limit group learned the result during submission");
+          "Previously successful group was rejected during submission");
       assertTrue(service.savePendingSubmission(fixture.submission(fixture.studentTwoId), 1).accepted(),
           "Later eligible submission was not saved");
 
@@ -102,11 +106,58 @@ public final class BuzzAttemptServiceTest {
       assertEquals(fixture.studentTwoId, result.winnerUserId(),
           "Finalization did not skip the earlier over-limit group");
       assertEquals(1, classroomRepository.globalGroupSuccessfulBuzzCount(fixture.groupOne),
-          "Limit rejection changed the group success count");
-      assertEquals("SUCCESS_LIMIT_REACHED", attemptOutcome(fixture.questionId, fixture.studentOneId),
-          "Over-limit attempt was not made ineligible");
+          "First-win priority changed the non-winning group's success count");
+      assertEquals("NOT_FASTEST", attemptOutcome(fixture.questionId, fixture.studentOneId),
+          "Previously successful attempt did not receive the normal non-winner outcome");
       assertEquals("BUZZ_FAILED", submissionReviewStatus(fixture.questionId, fixture.studentOneId),
           "Over-limit pending answer did not become a generic student-visible failure");
+    }
+  }
+
+  private void fastestFallbackAllowsAnotherSuccess() throws Exception {
+    try (Fixture fixture = createFixture()) {
+      BuzzAttemptService service = service();
+      execute("INSERT INTO global_group_buzz_counts (group_number, successful_buzz_count) VALUES (?, 1)",
+          fixture.groupOne);
+      execute("INSERT INTO global_group_buzz_counts (group_number, successful_buzz_count) VALUES (?, 1)",
+          fixture.groupTwo);
+      fixture.saveAttempt(fixture.studentOneId, 1, null);
+      fixture.saveAttempt(fixture.studentTwoId, 2, null);
+      service.savePendingSubmission(fixture.submission(fixture.studentOneId), 1);
+      service.savePendingSubmission(fixture.submission(fixture.studentTwoId), 1);
+
+      var result = service.finalizeRound(fixture.questionId, 1);
+      assertEquals(fixture.studentOneId, result.winnerUserId(),
+          "Fastest candidate did not win after every candidate group had succeeded");
+      assertEquals(2, result.groupSuccessfulBuzzCount(),
+          "Fastest fallback did not increment the unbounded daily count");
+    }
+  }
+
+  private void solePreviouslySuccessfulCandidateCanWin() throws Exception {
+    try (Fixture fixture = createFixture()) {
+      execute("INSERT INTO global_group_buzz_counts (group_number, successful_buzz_count) VALUES (?, 1)",
+          fixture.groupOne);
+      fixture.saveAttempt(fixture.studentOneId, 1, null);
+      BuzzAttemptService service = service();
+      service.savePendingSubmission(fixture.submission(fixture.studentOneId), 1);
+
+      var result = service.finalizeRound(fixture.questionId, 1);
+      assertEquals(fixture.studentOneId, result.winnerUserId(),
+          "A sole previously successful candidate was incorrectly rejected");
+      assertEquals(2, result.groupSuccessfulBuzzCount(),
+          "Sole fallback winner did not increment its count");
+    }
+  }
+
+  private void resetRestoresFirstWinPriority() throws Exception {
+    try (Fixture fixture = createFixture()) {
+      execute("INSERT INTO global_group_buzz_counts (group_number, successful_buzz_count) VALUES (?, 3)",
+          fixture.groupOne);
+      assertTrue(classroomRepository.resetCurrentTaipeiDayGlobalGroupSuccessfulBuzzCounts() > 0,
+          "Current-day reset did not remove recorded success counts");
+      assertEquals(0, classroomRepository.globalGroupSuccessfulBuzzCount(fixture.groupOne),
+          "Reset did not restore zero-success priority");
     }
   }
 
@@ -191,40 +242,18 @@ public final class BuzzAttemptServiceTest {
     }
   }
 
-  private void globalGroupFinalSlotIsAtomicAcrossClassrooms() throws Exception {
-    try (Fixture fixture = createFixture()) {
-      int isolatedGroup = fixture.groupOne;
-      CountDownLatch start = new CountDownLatch(1);
-      ExecutorService executor = Executors.newFixedThreadPool(2);
-      try {
-        Future<Integer> first = executor.submit(() -> incrementGroupAfter(start, isolatedGroup, 1));
-        Future<Integer> second = executor.submit(() -> incrementGroupAfter(start, isolatedGroup, 1));
-        start.countDown();
-        int accepted = (first.get() == null ? 0 : 1) + (second.get() == null ? 0 : 1);
-        assertEquals(1, accepted, "Same-group concurrent successes exceeded the final slot");
-      } finally {
-        executor.shutdownNow();
-      }
-      assertEquals(1, classroomRepository.globalGroupSuccessfulBuzzCount(isolatedGroup),
-          "Cross-classroom group accounting exceeded the fixed global limit");
-    }
-  }
-
-  private void classroomSettingCannotOverrideFixedGlobalLimit() {
-    ClassroomScoringPolicy policy = ClassroomScoringPolicy.fromSettings(
-        "{\"successfulBuzzLimit\":99,\"buzzBonus\":5}");
-    assertEquals(1, policy.successfulBuzzLimit(),
-        "Classroom settings overrode the fixed global group limit");
-  }
-
-  private void sameGroupAcrossClassroomsAllowsOnlyOneWinner() throws Exception {
+  private void concurrentQuestionsObserveFirstWinPriority() throws Exception {
     try (Fixture firstClassroom = createFixture();
          Fixture secondClassroom = createFixture(firstClassroom.groupOne)) {
       BuzzAttemptService service = service();
       firstClassroom.saveAttempt(firstClassroom.studentOneId, 1, null);
+      firstClassroom.saveAttempt(firstClassroom.studentTwoId, 2, null);
       secondClassroom.saveAttempt(secondClassroom.studentOneId, 1, null);
+      secondClassroom.saveAttempt(secondClassroom.studentTwoId, 2, null);
       service.savePendingSubmission(firstClassroom.submission(firstClassroom.studentOneId), 1);
+      service.savePendingSubmission(firstClassroom.submission(firstClassroom.studentTwoId), 1);
       service.savePendingSubmission(secondClassroom.submission(secondClassroom.studentOneId), 1);
+      service.savePendingSubmission(secondClassroom.submission(secondClassroom.studentTwoId), 1);
       CountDownLatch start = new CountDownLatch(1);
       ExecutorService executor = Executors.newFixedThreadPool(2);
       try {
@@ -237,32 +266,62 @@ public final class BuzzAttemptServiceTest {
           return service.finalizeRound(secondClassroom.questionId, 1, 1);
         });
         start.countDown();
-        int winners = (first.get().winnerSubmissionId() == null ? 0 : 1)
-            + (second.get().winnerSubmissionId() == null ? 0 : 1);
-        assertEquals(1, winners, "The same group won in two different classrooms");
+        var firstResult = first.get();
+        var secondResult = second.get();
+        assertTrue(!firstResult.winnerGroupNumber().equals(secondResult.winnerGroupNumber()),
+            "Concurrent finalizations both granted first-win priority to the same group");
       } finally {
         executor.shutdownNow();
       }
       int winners = winnerSubmissionCount(firstClassroom.questionId)
           + winnerSubmissionCount(secondClassroom.questionId);
-      assertEquals(1, winners, "Cross-classroom submissions exceeded the global group limit");
+      assertEquals(2, winners, "Concurrent questions did not both produce winners");
       assertEquals(1, classroomRepository.globalGroupSuccessfulBuzzCount(firstClassroom.groupOne),
-          "Cross-classroom success count was not global");
+          "Shared fastest group should have exactly one first-priority win");
+      assertEquals(1, classroomRepository.globalGroupSuccessfulBuzzCount(firstClassroom.groupTwo),
+          "Second group did not receive the other first-priority win");
     }
   }
 
-  private Integer incrementGroupAfter(
-      CountDownLatch start,
-      int groupNumber,
-      int limit
-  ) throws Exception {
-    start.await();
-    try (Connection connection = database.openConnection()) {
-      connection.setAutoCommit(false);
-      Integer result = classroomRepository.incrementGlobalGroupSuccessfulBuzzCount(
-          connection, groupNumber, limit);
-      connection.commit();
-      return result;
+  private void sixQuestionsAllocateFirstWinsThenFastest() throws Exception {
+    List<Fixture> fixtures = new ArrayList<>();
+    int sharedGroupOne = 900_001;
+    try {
+      for (int index = 0; index < 6; index++) fixtures.add(createFixture(sharedGroupOne));
+      List<Integer> winners = new ArrayList<>();
+      BuzzAttemptService service = service();
+      for (Fixture fixture : fixtures) {
+        fixture.saveAttempt(fixture.studentOneId, 1, null);
+        fixture.saveAttempt(fixture.studentTwoId, 2, null);
+        fixture.saveAttempt(fixture.studentThreeId, 3, null);
+        service.savePendingSubmission(fixture.submission(fixture.studentOneId), 1);
+        service.savePendingSubmission(fixture.submission(fixture.studentTwoId), 1);
+        service.savePendingSubmission(fixture.submission(fixture.studentThreeId), 1);
+        winners.add(service.finalizeRound(fixture.questionId, 1).winnerGroupNumber());
+      }
+      assertEquals(List.of(sharedGroupOne, sharedGroupOne + 1, sharedGroupOne + 2,
+              sharedGroupOne, sharedGroupOne, sharedGroupOne), winners,
+          "Six-question allocation did not prioritize first wins before fastest fallback");
+      assertEquals(4, classroomRepository.globalGroupSuccessfulBuzzCount(sharedGroupOne),
+          "Fastest group's final count was incorrect");
+      assertEquals(1, classroomRepository.globalGroupSuccessfulBuzzCount(sharedGroupOne + 1),
+          "Second group's final count was incorrect");
+      assertEquals(1, classroomRepository.globalGroupSuccessfulBuzzCount(sharedGroupOne + 2),
+          "Third group's final count was incorrect");
+      int winnerRows = 0;
+      for (Fixture fixture : fixtures) winnerRows += winnerSubmissionCount(fixture.questionId);
+      assertEquals(6, winnerRows, "Not every submitted question produced a Sheets-bound winner");
+    } finally {
+      for (Fixture fixture : fixtures) fixture.close();
+    }
+  }
+
+  private void noSubmissionProducesNoWinner() throws Exception {
+    try (Fixture fixture = createFixture()) {
+      var result = service().finalizeRound(fixture.questionId, 1);
+      assertEquals("NO_ELIGIBLE_SUBMISSION", result.outcomeStatus(),
+          "Empty round did not report no eligible submission");
+      assertEquals(null, result.winnerSubmissionId(), "Empty round unexpectedly produced a winner");
     }
   }
 
@@ -313,6 +372,7 @@ public final class BuzzAttemptServiceTest {
     UUID teacherId = UUID.randomUUID();
     UUID studentOneId = UUID.randomUUID();
     UUID studentTwoId = UUID.randomUUID();
+    UUID studentThreeId = UUID.randomUUID();
     UUID classroomId = UUID.randomUUID();
     UUID questionId = UUID.randomUUID();
     String suffix = questionId.toString().replace("-", "").substring(0, 10);
@@ -320,6 +380,7 @@ public final class BuzzAttemptServiceTest {
         ? 100_000 + Math.floorMod(questionId.hashCode(), 800_000)
         : forcedGroupOne;
     int groupTwo = groupOne + 1;
+    int groupThree = groupOne + 2;
     try (Connection connection = database.openConnection()) {
       connection.setAutoCommit(false);
       try {
@@ -329,6 +390,8 @@ public final class BuzzAttemptServiceTest {
             studentOneId, "student-one-" + suffix, "Student One / " + groupOne);
         execute(connection, "INSERT INTO users (id, external_id, display_name, role) VALUES (?, ?, ?, 'STUDENT')",
             studentTwoId, "student-two-" + suffix, "Student Two / " + groupTwo);
+        execute(connection, "INSERT INTO users (id, external_id, display_name, role) VALUES (?, ?, ?, 'STUDENT')",
+            studentThreeId, "student-three-" + suffix, "Student Three / " + groupThree);
         execute(connection, "INSERT INTO classrooms "
                 + "(id, teacher_id, classroom_code, name, status, participation_settings) "
                 + "VALUES (?, ?, ?, 'Ranking Test', 'OPEN', '{}'::jsonb)",
@@ -341,6 +404,10 @@ public final class BuzzAttemptServiceTest {
                 + "(id, classroom_id, user_id, role, presence_status, successful_buzz_count) "
                 + "VALUES (?, ?, ?, 'STUDENT', 'ONLINE', 0)",
             UUID.randomUUID(), classroomId, studentTwoId);
+        execute(connection, "INSERT INTO classroom_members "
+                + "(id, classroom_id, user_id, role, presence_status, successful_buzz_count) "
+                + "VALUES (?, ?, ?, 'STUDENT', 'ONLINE', 0)",
+            UUID.randomUUID(), classroomId, studentThreeId);
         execute(connection, "INSERT INTO questions "
                 + "(id, classroom_id, ordinal, type, state, prompt, answer_key, publication_settings, score, answer_time_limit_seconds, created_by) "
                 + "VALUES (?, ?, 1, 'BUZZ', 'BUZZ_OPEN', 'Ranking question', '{}'::jsonb, '{}'::jsonb, 0, 30, ?)",
@@ -353,7 +420,8 @@ public final class BuzzAttemptServiceTest {
         throw exception;
       }
     }
-    return new Fixture(teacherId, studentOneId, studentTwoId, classroomId, questionId, groupOne, groupTwo);
+    return new Fixture(teacherId, studentOneId, studentTwoId, studentThreeId,
+        classroomId, questionId, groupOne, groupTwo, groupThree);
   }
 
   private int winnerSubmissionCount(UUID questionId) throws SQLException {
@@ -440,27 +508,33 @@ public final class BuzzAttemptServiceTest {
     private final UUID teacherId;
     private final UUID studentOneId;
     private final UUID studentTwoId;
+    private final UUID studentThreeId;
     private final UUID classroomId;
     private final UUID questionId;
     private final int groupOne;
     private final int groupTwo;
+    private final int groupThree;
 
     private Fixture(
         UUID teacherId,
         UUID studentOneId,
         UUID studentTwoId,
+        UUID studentThreeId,
         UUID classroomId,
         UUID questionId,
         int groupOne,
-        int groupTwo
+        int groupTwo,
+        int groupThree
     ) {
       this.teacherId = teacherId;
       this.studentOneId = studentOneId;
       this.studentTwoId = studentTwoId;
+      this.studentThreeId = studentThreeId;
       this.classroomId = classroomId;
       this.questionId = questionId;
       this.groupOne = groupOne;
       this.groupTwo = groupTwo;
+      this.groupThree = groupThree;
     }
 
     private void saveAttempt(UUID userId, long receiptOrder, Instant legacyDeadline) {
@@ -473,14 +547,17 @@ public final class BuzzAttemptServiceTest {
       return new SubmissionEntity(
           UUID.randomUUID(), classroomId, questionId, userId, 1, "ranking answer",
           "RECEIVED", null, null, "PENDING_REVIEW", Instant.now(), null,
-          userId.equals(studentOneId) ? groupOne : groupTwo, false, false, false);
+          userId.equals(studentOneId) ? groupOne : userId.equals(studentTwoId) ? groupTwo : groupThree,
+          false, false, false);
     }
 
     @Override
     public void close() throws Exception {
       execute("DELETE FROM classrooms WHERE id = ?", classroomId);
-      execute("DELETE FROM users WHERE id IN (?, ?, ?)", teacherId, studentOneId, studentTwoId);
-      execute("DELETE FROM global_group_buzz_counts WHERE group_number IN (?, ?)", groupOne, groupTwo);
+      execute("DELETE FROM users WHERE id IN (?, ?, ?, ?)",
+          teacherId, studentOneId, studentTwoId, studentThreeId);
+      execute("DELETE FROM global_group_buzz_counts WHERE group_number IN (?, ?, ?)",
+          groupOne, groupTwo, groupThree);
     }
   }
 }

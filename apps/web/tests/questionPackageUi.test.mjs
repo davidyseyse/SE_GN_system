@@ -36,27 +36,29 @@ test("teacher does not configure an individual answer deadline", () => {
   assert.doesNotMatch(teacherSource, /answerTimeLimitSeconds:/);
 });
 
-test("teacher hides the fixed global group limit and displays usage", () => {
+test("teacher displays accumulated daily group successes without a limit", () => {
   assert.doesNotMatch(teacherSource, /setSuccessfulBuzzLimit/);
   assert.doesNotMatch(teacherSource, /successfulBuzzLimit: parsedSuccessfulBuzzLimit/);
   assert.doesNotMatch(teacherSource, /每組搶答成功上限必須是正整數/);
   assert.doesNotMatch(teacherSource, /value=\{successfulBuzzLimit\}/);
   assert.match(teacherSource, /member\.groupSuccessfulBuzzCount/);
   assert.match(teacherSource, /今日成功搶答/);
+  assert.match(teacherSource, /groupSuccessfulBuzzCount \?\? 0\)\} 次/);
+  assert.doesNotMatch(teacherSource, /classroomSuccessfulBuzzLimit/);
   assert.match(teacherSource, /className="classroom-create-form"/);
   assert.match(teacherSource, /className="classroom-action-row"/);
   assert.doesNotMatch(teacherSource, /hero-action-button-primary/);
   assert.equal((teacherSource.match(/hero-action-button hero-action-button-secondary/g) ?? []).length, 2);
 });
 
-test("teacher can reset all current-day group answer limits independently", () => {
+test("teacher can reset all current-day group success counts independently", () => {
   assert.match(teacherSource, /resetAnswerLimits/);
-  assert.match(teacherSource, /確定要重置所有組別的答題限制嗎？/);
-  assert.match(teacherSource, />\s*重置全部題目\s*<\/button>[\s\S]*?>\s*重置答題限制\s*<\/button>/);
+  assert.match(teacherSource, /確定要重置所有組別今天的成功次數嗎？/);
+  assert.match(teacherSource, />\s*重置全部題目\s*<\/button>[\s\S]*?>\s*重置成功次數\s*<\/button>/);
   assert.match(teacherSource, /await resetAnswerLimits\(teacherToken, classroomCode\)/);
   assert.match(teacherSource, /await getMembers\(teacherToken, classroomCode\)/);
-  assert.match(teacherSource, /已重置所有組別今天的答題限制。/);
-  assert.match(teacherSource, /目前沒有需要重置的答題限制。/);
+  assert.match(teacherSource, /已重置所有組別今天的成功次數。/);
+  assert.match(teacherSource, /目前沒有需要重置的成功次數。/);
 });
 
 test("teacher selects owned classrooms and confirms deletion", () => {

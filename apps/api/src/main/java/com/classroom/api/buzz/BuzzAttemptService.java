@@ -14,6 +14,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -74,7 +75,7 @@ public final class BuzzAttemptService {
     return new SubmissionResult(true, "PENDING_REVIEW", 0);
   }
 
-  public FinalizationResult finalizeRound(UUID questionId, int roundNumber, int successfulBuzzLimit) {
+  public FinalizationResult finalizeRound(UUID questionId, int roundNumber) {
     Candidate winner = null;
     int groupSuccessfulBuzzCount = 0;
     boolean newlyFinalized = false;
@@ -82,33 +83,42 @@ public final class BuzzAttemptService {
     try (Connection connection = database.openConnection()) {
       connection.setAutoCommit(false);
       try {
+        lockCurrentTaipeiDayFinalizationPolicy(connection);
         context = lockRound(connection, questionId, roundNumber);
         Candidate existingWinner = findExistingWinner(connection, questionId, roundNumber);
         if (existingWinner != null) {
+          int existingCount = classroomRepository.globalGroupSuccessfulBuzzCount(
+              connection, existingWinner.eligibilityGroupNumber());
           connection.commit();
           return new FinalizationResult(
               true, false, "ALREADY_FINALIZED", existingWinner.submissionId(),
-              existingWinner.attempt().userId(), existingWinner.groupNumber(), 0);
+              existingWinner.attempt().userId(), existingWinner.groupNumber(), existingCount);
         }
 
         List<Candidate> candidates = findPendingCandidates(connection, questionId, roundNumber);
+        List<Candidate> eligibleCandidates = new ArrayList<>();
         for (Candidate candidate : candidates) {
           Integer groupNumber = candidate.eligibilityGroupNumber();
           if (groupNumber == null || groupNumber <= 0) {
             markCandidateFailed(connection, candidate, "GROUP_REQUIRED");
             continue;
           }
-          Integer updatedCount = classroomRepository.incrementGlobalGroupSuccessfulBuzzCount(
-              connection, groupNumber, successfulBuzzLimit);
-          if (updatedCount == null) {
-            markCandidateFailed(connection, candidate, "SUCCESS_LIMIT_REACHED");
-            continue;
-          }
+          int currentCount = classroomRepository.globalGroupSuccessfulBuzzCount(connection, groupNumber);
+          eligibleCandidates.add(candidate.withCurrentGroupSuccessCount(currentCount));
+        }
+        eligibleCandidates.sort(Comparator
+            .comparingInt((Candidate candidate) -> candidate.currentGroupSuccessCount() == 0 ? 0 : 1)
+            .thenComparingLong(candidate -> candidate.attempt().receiptOrder())
+            .thenComparing(candidate -> candidate.attempt().receivedAt())
+            .thenComparing(candidate -> candidate.attempt().id()));
+        if (!eligibleCandidates.isEmpty()) {
+          Candidate candidate = eligibleCandidates.get(0);
+          int updatedCount = classroomRepository.incrementGlobalGroupSuccessfulBuzzCount(
+              connection, candidate.eligibilityGroupNumber());
           markCandidateWinner(connection, candidate);
           winner = candidate;
           groupSuccessfulBuzzCount = updatedCount;
           newlyFinalized = true;
-          break;
         }
 
         closeRemainingCandidates(connection, questionId, roundNumber,
@@ -122,13 +132,30 @@ public final class BuzzAttemptService {
       throw new DatabaseException("Unable to finalize buzz round", exception);
     }
 
-    if (winner != null) publishWinner(winner.attempt());
-    publishReviewCompleted(context, winner);
+    if (winner != null) publishWinner(winner, groupSuccessfulBuzzCount);
+    publishReviewCompleted(context, winner, groupSuccessfulBuzzCount);
     return new FinalizationResult(
         true, newlyFinalized, winner == null ? "NO_ELIGIBLE_SUBMISSION" : "FINALIZED",
         winner == null ? null : winner.submissionId(),
         winner == null ? null : winner.attempt().userId(),
         winner == null ? null : winner.groupNumber(), groupSuccessfulBuzzCount);
+  }
+
+  /** @deprecated The daily success count is no longer a hard limit. */
+  @Deprecated
+  public FinalizationResult finalizeRound(UUID questionId, int roundNumber, int ignoredSuccessfulBuzzLimit) {
+    return finalizeRound(questionId, roundNumber);
+  }
+
+  private static void lockCurrentTaipeiDayFinalizationPolicy(Connection connection) throws SQLException {
+    try (PreparedStatement statement = connection.prepareStatement("""
+        SELECT pg_advisory_xact_lock(
+          1179799634,
+          (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date - DATE '2000-01-01'
+        )
+        """)) {
+      statement.execute();
+    }
   }
 
   public BuzzRecordEntity cancelAttempt(UUID questionId, int roundNumber, UUID userId) {
@@ -403,26 +430,36 @@ public final class BuzzAttemptService {
     }
   }
 
-  private void publishWinner(AttemptView attempt) {
-    eventBroker.publish(attempt.classroomCode(), "BUZZ_RESULT", Map.of(
-        "packageId", attempt.questionId().toString(),
-        "questionId", attempt.questionId().toString(),
-        "roundId", Integer.toString(attempt.roundNumber()),
-        "userId", attempt.userId().toString(),
-        "externalUserId", attempt.externalUserId(),
-        "displayName", attempt.displayName(),
-        "requestId", attempt.requestId(),
-        "receiptOrder", attempt.receiptOrder(),
-        "successful", true));
+  private void publishWinner(Candidate winner, int groupSuccessfulBuzzCount) {
+    AttemptView attempt = winner.attempt();
+    Map<String, Object> payload = new java.util.LinkedHashMap<>();
+    payload.put("packageId", attempt.questionId().toString());
+    payload.put("questionId", attempt.questionId().toString());
+    payload.put("roundId", Integer.toString(attempt.roundNumber()));
+    payload.put("userId", attempt.userId().toString());
+    payload.put("externalUserId", attempt.externalUserId());
+    payload.put("displayName", attempt.displayName());
+    payload.put("requestId", attempt.requestId());
+    payload.put("receiptOrder", attempt.receiptOrder());
+    payload.put("winnerGroupNumber", winner.groupNumber() == null ? 0 : winner.groupNumber());
+    payload.put("groupSuccessfulBuzzCount", groupSuccessfulBuzzCount);
+    payload.put("successful", true);
+    eventBroker.publish(attempt.classroomCode(), "BUZZ_RESULT", payload);
   }
 
-  private void publishReviewCompleted(RoundContext context, Candidate winner) {
+  private void publishReviewCompleted(
+      RoundContext context,
+      Candidate winner,
+      int groupSuccessfulBuzzCount
+  ) {
     Map<String, Object> payload = new java.util.LinkedHashMap<>();
     payload.put("packageId", context.questionId().toString());
     payload.put("questionId", context.questionId().toString());
     payload.put("roundId", Integer.toString(context.roundNumber()));
     payload.put("winnerUserId", winner == null ? "" : winner.attempt().userId().toString());
     payload.put("winnerExternalUserId", winner == null ? "" : winner.attempt().externalUserId());
+    payload.put("winnerGroupNumber", winner == null || winner.groupNumber() == null ? 0 : winner.groupNumber());
+    payload.put("groupSuccessfulBuzzCount", groupSuccessfulBuzzCount);
     eventBroker.publish(context.classroomCode(), "BUZZ_REVIEW_COMPLETED", payload);
   }
 
@@ -472,8 +509,17 @@ public final class BuzzAttemptService {
       AttemptView attempt,
       UUID submissionId,
       Integer groupNumber,
-      boolean groupChallenged
+      boolean groupChallenged,
+      int currentGroupSuccessCount
   ) {
+    private Candidate(AttemptView attempt, UUID submissionId, Integer groupNumber, boolean groupChallenged) {
+      this(attempt, submissionId, groupNumber, groupChallenged, 0);
+    }
+
+    private Candidate withCurrentGroupSuccessCount(int count) {
+      return new Candidate(attempt, submissionId, groupNumber, groupChallenged, count);
+    }
+
     private Integer eligibilityGroupNumber() {
       return groupChallenged
           ? SheetAnswerFormatter.extractGroupNumber(attempt.displayName())

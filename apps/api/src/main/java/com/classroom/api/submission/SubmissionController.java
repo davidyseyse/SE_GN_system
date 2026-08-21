@@ -123,8 +123,6 @@ public final class SubmissionController {
           false,
           false
       );
-      ClassroomScoringPolicy scoringPolicy = ClassroomScoringPolicy.fromSettings(
-          classroom.participationSettings());
       BuzzAttemptService.SubmissionResult buzzResult = null;
       if (winnerSubmission) {
         buzzResult = buzzAttemptService.savePendingSubmission(submission, roundNumber);
@@ -177,8 +175,7 @@ public final class SubmissionController {
           "awardedScore", decision.awardedScore() == null ? "" : decision.awardedScore().toString(),
           "reviewStatus", decision.reviewStatus() == null ? "" : decision.reviewStatus(),
           "groupNumber", submission.groupNumber() == null ? 0 : submission.groupNumber(),
-          "groupSuccessfulBuzzCount", 0,
-          "successfulBuzzLimit", winnerSubmission ? 0 : scoringPolicy.successfulBuzzLimit()
+          "groupSuccessfulBuzzCount", 0
       ));
     };
   }
@@ -197,7 +194,7 @@ public final class SubmissionController {
       ClassroomScoringPolicy scoringPolicy = ClassroomScoringPolicy.fromSettings(
           classroom.participationSettings());
       BuzzAttemptService.FinalizationResult result = buzzAttemptService.finalizeRound(
-          question.id(), roundNumber, scoringPolicy.successfulBuzzLimit());
+          question.id(), roundNumber);
 
       String syncStatus = "NOT_REQUIRED";
       String syncError = "";
@@ -228,7 +225,6 @@ public final class SubmissionController {
       response.put("winnerUserId", result.winnerUserId() == null ? "" : result.winnerUserId().toString());
       response.put("winnerGroupNumber", result.winnerGroupNumber() == null ? 0 : result.winnerGroupNumber());
       response.put("groupSuccessfulBuzzCount", result.groupSuccessfulBuzzCount());
-      response.put("successfulBuzzLimit", scoringPolicy.successfulBuzzLimit());
       response.put("syncStatus", syncStatus);
       response.put("syncError", syncError);
       HttpResponses.json(exchange, 200, response);

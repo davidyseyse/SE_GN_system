@@ -23,7 +23,6 @@ import com.classroom.api.http.HttpHandlerFunction;
 import com.classroom.api.http.HttpResponses;
 import com.classroom.api.question.QuestionPackageService;
 import com.classroom.api.realtime.RealtimeEventBroker;
-import com.classroom.api.score.ClassroomScoringPolicy;
 import com.classroom.api.sheets.GoogleSheetsSyncService;
 import com.classroom.api.sheets.SheetAnswerFormatter;
 import com.classroom.api.util.JsonParser;
@@ -114,8 +113,6 @@ public final class PackageSubmissionController {
           UUID.randomUUID(), classroom.id(), packageId, user.id(), 1, answerJson,
           "RECEIVED", null, null, "PENDING_REVIEW", Instant.now(), null,
           SheetAnswerFormatter.extractGroupNumber(user.displayName()), false, false, false);
-      ClassroomScoringPolicy scoringPolicy = ClassroomScoringPolicy.fromSettings(
-          classroom.participationSettings());
       BuzzAttemptService.SubmissionResult buzzResult = null;
       if (winnerSubmission) {
         buzzResult = buzzAttemptService.savePendingSubmission(submission, round);
@@ -175,8 +172,7 @@ public final class PackageSubmissionController {
           "submissionId", submission.id().toString(),
           "syncStatus", syncStatus,
           "groupNumber", submission.groupNumber() == null ? 0 : submission.groupNumber(),
-          "groupSuccessfulBuzzCount", 0,
-          "successfulBuzzLimit", winnerSubmission ? 0 : scoringPolicy.successfulBuzzLimit()
+          "groupSuccessfulBuzzCount", 0
       ));
     };
   }

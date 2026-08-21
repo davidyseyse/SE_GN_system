@@ -102,7 +102,6 @@ export function TeacherDashboardPage() {
   const [resumeClassroomCode, setResumeClassroomCode] = useState("");
   const [teacherClassrooms, setTeacherClassrooms] = useState<ClassroomView[]>([]);
   const [classroomName, setClassroomName] = useState("課堂 A");
-  const [classroomSuccessfulBuzzLimit, setClassroomSuccessfulBuzzLimit] = useState(1);
   const [questionPackageTitle, setQuestionPackageTitle] = useState("");
   const [questionItems, setQuestionItems] = useState<Array<{ clientId: string; prompt: string; targetCell: string }>>([
     { clientId: crypto.randomUUID(), prompt: "", targetCell: "" }
@@ -190,7 +189,6 @@ export function TeacherDashboardPage() {
       listQuestions(teacherToken, classroomCode).then((result) => setQuestions(result.questions)),
       getMembers(teacherToken, classroomCode).then((result) => {
         setMembers(result.members as unknown as Array<Record<string, unknown>>);
-        setClassroomSuccessfulBuzzLimit(result.successfulBuzzLimit);
       }),
       getSummary(teacherToken, classroomCode).then((result) => setSummary(result as unknown as Record<string, unknown>))
     ]);
@@ -230,7 +228,6 @@ export function TeacherDashboardPage() {
       showAnswer: false
     });
     const result = await createClassroom(teacherToken, classroomName, settings);
-    setClassroomSuccessfulBuzzLimit(1);
     setClassroomCode(result.classroom.code);
     setResumeClassroomCode(result.classroom.code);
     setTeacherClassrooms((current) => [
@@ -481,17 +478,16 @@ export function TeacherDashboardPage() {
     if (!teacherToken || !classroomCode) {
       return;
     }
-    if (!window.confirm("確定要重置所有組別的答題限制嗎？")) {
+    if (!window.confirm("確定要重置所有組別今天的成功次數嗎？")) {
       return;
     }
 
     const result = await resetAnswerLimits(teacherToken, classroomCode);
     const refreshed = await getMembers(teacherToken, classroomCode);
     setMembers(refreshed.members as unknown as Array<Record<string, unknown>>);
-    setClassroomSuccessfulBuzzLimit(refreshed.successfulBuzzLimit);
     setNotice(result.resetGroupCount > 0
-      ? "已重置所有組別今天的答題限制。"
-      : "目前沒有需要重置的答題限制。");
+      ? "已重置所有組別今天的成功次數。"
+      : "目前沒有需要重置的成功次數。");
   }
 
   async function handleBatch(action: "OPEN_ALL" | "STOP_ALL" | "RESET_ALL") {
@@ -553,7 +549,6 @@ export function TeacherDashboardPage() {
       ]);
       setQuestions(questionResult.questions);
       setMembers(memberResult.members as unknown as Array<Record<string, unknown>>);
-      setClassroomSuccessfulBuzzLimit(memberResult.successfulBuzzLimit);
 
       setRetrySheetSubmissionIds((current) => {
         const next = { ...current };
@@ -602,7 +597,6 @@ export function TeacherDashboardPage() {
     ]);
     setQuestions(questionResult.questions);
     setMembers(memberResult.members as unknown as Array<Record<string, unknown>>);
-    setClassroomSuccessfulBuzzLimit(memberResult.successfulBuzzLimit);
     if (!review.winnerSubmissionId) {
       setNotice("搶答已完成，本輪沒有符合條件的成功答案。");
     } else if (review.syncStatus === "RETRYABLE") {
@@ -980,7 +974,7 @@ export function TeacherDashboardPage() {
             disabled={!teacherToken || !classroomCode}
             onClick={() => void handleResetAnswerLimits()}
           >
-            重置答題限制
+            重置成功次數
           </button>
         </div>
         <div className="card-list">
@@ -1106,7 +1100,7 @@ export function TeacherDashboardPage() {
               <span>{String(member.userId)}</span>
               <span>{formatPresenceStatus(String(member.presenceStatus))}</span>
               <span>
-                第{String(member.groupNumber || "-")}組今日成功搶答：{String(member.groupSuccessfulBuzzCount ?? 0)} / {classroomSuccessfulBuzzLimit > 0 ? classroomSuccessfulBuzzLimit : "不限"}
+                第{String(member.groupNumber || "-")}組今日成功搶答：{String(member.groupSuccessfulBuzzCount ?? 0)} 次
               </span>
             </li>
           ))}
